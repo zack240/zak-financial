@@ -31,6 +31,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg); color: var(--ink);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -57,7 +58,8 @@ body.private .amt { filter: blur(7px); user-select: none; }
 .btn.danger { color: var(--bad); }
 .btn.sm { padding: 5px 10px; font-size: 13px; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
-input, select, textarea { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+/* 16px min: iOS Safari zooms into any focused field below 16px and keeps the zoom after login */
+input, select, textarea { font: inherit; font-size: 16px; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px 10px; width: 100%; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }

@@ -145,6 +145,7 @@
   const activeSelfItems = () => S.items.filter((i) => i.active && i.paid_by === 'self');
 
   async function startApp() {
+    if (document.activeElement) document.activeElement.blur();
     $('#auth').hidden = true; $('#app').hidden = false; bumpIdle();
     $('#view').innerHTML = '<p class="muted">Memuatkan…</p>';
     try { await loadAll(); } catch (e) { $('#view').innerHTML = `<div class="alert bad">Gagal muat data: ${esc(e.message)}</div>`; return; }
