@@ -26,6 +26,7 @@
   const shortMonth = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`; };
   const fmtDate = (iso) => { if (!iso) return '—'; const d = new Date(iso + 'T00:00:00'); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
   const round2 = (n) => Math.round(n * 100) / 100;
+  const monthsBetween = (a, b) => { const x = new Date(a + 'T00:00:00'), y = new Date(b + 'T00:00:00'); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth(); };
 
   const S = {
     settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [],
@@ -480,21 +481,29 @@
       <div class="grid g2">${S.loans.map((l) => {
         const pays = S.payments.filter((p) => p.loan_id === l.id);
         const paidTotal = pays.reduce((s, p) => s + num(p.amount), 0);
-        const lastBal = pays.find((p) => p.balance_after != null)?.balance_after;
-        const bal = lastBal ?? (l.original_amount != null ? num(l.original_amount) - paidTotal : null);
+        // baki = baki penyata terakhir − bayaran yg dibuat selepas penyata tu (anggaran, tanpa ujrah baru)
+        const bi = pays.findIndex((p) => p.balance_after != null);
+        const bal = bi >= 0 ? num(pays[bi].balance_after) - pays.slice(0, bi).reduce((s, p) => s + num(p.amount), 0)
+          : (l.original_amount != null ? num(l.original_amount) - paidTotal : null);
         const pct = l.original_amount && bal != null ? Math.max(0, Math.min(100, (1 - bal / num(l.original_amount)) * 100)) : null;
-        const monthsLeft = bal != null && num(l.monthly) > 0 ? Math.ceil(bal / num(l.monthly)) : null;
+        const mon = num(l.monthly);
+        const totalInst = l.start_date && l.end_date ? monthsBetween(l.start_date, l.end_date) + 1 : null;
+        const leftSched = totalInst != null ? Math.max(0, totalInst - pays.length) : null;
+        const leftBal = bal != null && mon > 0 ? Math.ceil(round2(bal / mon)) : null;
+        const extra = leftSched != null && bal != null && mon > 0 ? round2(leftSched * mon - bal) : null;
         return `<div class="card">
           <div class="card-h"><h2>${esc(l.name)}</h2><div class="row"><button class="btn ghost sm" data-edit-loan="${l.id}">Edit</button><button class="btn sm" data-pay="${l.id}">＋ Bayaran</button></div></div>
           <div class="grid g3">
-            <div class="kpi"><div class="lbl">Baki</div><div class="val">${bal == null ? '—' : amt(bal)}</div></div>
+            <div class="kpi"><div class="lbl">Baki</div><div class="val">${bal == null ? '—' : amt(bal)}</div>${bi > 0 ? '<div class="sub">anggaran selepas penyata</div>' : ''}</div>
             <div class="kpi"><div class="lbl">Bulanan</div><div class="val">${l.monthly == null ? '—' : amt(l.monthly)}</div></div>
-            <div class="kpi"><div class="lbl">Anggaran habis</div><div class="val">${monthsLeft == null ? '—' : monthsLeft + ' bln'}</div></div>
+            <div class="kpi"><div class="lbl">Ansuran lagi</div><div class="val">${leftSched ?? leftBal ?? '—'}</div>
+              <div class="sub">${totalInst != null ? `${pays.length}/${totalInst} dah bayar · tamat ${fmtDate(l.end_date)}` : 'ikut baki'}</div></div>
           </div>
-          ${pct != null ? `<div class="bar" style="margin-top:12px"><i data-w="${pct}"></i></div><div class="muted small">${Math.round(pct)}% dah dibayar dari ${rm(l.original_amount)}</div>` : ''}
+          ${pct != null ? `<div class="bar" style="margin-top:12px"><i data-w="${pct}"></i></div><div class="muted small">Baki turun ${Math.round(pct)}% dari ${rm(l.original_amount)} · ${pays.length} bayaran = ${rm(paidTotal)}</div>` : ''}
+          ${extra != null && extra > 0 ? `<p class="small warn">Ikut jadual, ${leftSched} × ${rm(mon)} = ${amt(leftSched * mon)}, iaitu ${amt(extra)} lebih dari baki (anggaran ujrah/kos). Kalau baki je dikira: ${leftBal} ansuran.</p>` : ''}
           ${l.notes ? `<p class="muted small">${esc(l.notes)}</p>` : ''}
           ${pays.length ? `<div class="tbl-wrap"><table><thead><tr><th>Tarikh</th><th class="r">Bayar</th><th class="r">Baki</th><th>Nota</th><th></th></tr></thead><tbody>
-            ${pays.slice(0, 12).map((p) => `<tr><td>${fmtDate(p.paid_on)}</td><td class="r">${amt(p.amount)}</td><td class="r">${p.balance_after == null ? '' : amt(p.balance_after)}</td><td class="small">${esc(p.note || '')}</td>
+            ${pays.map((p) => `<tr><td>${fmtDate(p.paid_on)}</td><td class="r">${amt(p.amount)}</td><td class="r">${p.balance_after == null ? '' : amt(p.balance_after)}</td><td class="small">${esc(p.note || '')}</td>
               <td class="r"><button class="btn ghost sm danger" data-del-pay="${p.id}">✕</button></td></tr>`).join('')}
           </tbody></table></div>` : '<p class="muted small">Belum ada rekod bayaran.</p>'}
         </div>`;
@@ -512,10 +521,10 @@
       <label>Nama<input name="name" value="${esc(x.name)}" required></label>
       <div class="grid g2"><label>Pemberi<input name="provider" value="${esc(x.provider || '')}"></label><label>No. rujukan<input name="ref_no" value="${esc(x.ref_no || '')}"></label></div>
       <div class="grid g2"><label>Jumlah asal (RM)<input name="original_amount" type="number" step="0.01" value="${x.original_amount ?? ''}"></label><label>Bayaran bulanan (RM)<input name="monthly" type="number" step="0.01" value="${x.monthly ?? ''}"></label></div>
-      <label>Tarikh mula<input name="start_date" type="date" value="${x.start_date || ''}"></label>
+      <div class="grid g2"><label>Tarikh mula bayar<input name="start_date" type="date" value="${x.start_date || ''}"></label><label>Tarikh tamat bayar<input name="end_date" type="date" value="${x.end_date || ''}"></label></div>
       <label>Nota<input name="notes" value="${esc(x.notes || '')}"></label>`, async (fd) => {
       const row = { name: fd.get('name'), provider: fd.get('provider') || null, ref_no: fd.get('ref_no') || null, original_amount: nOrNull(fd.get('original_amount')),
-        monthly: nOrNull(fd.get('monthly')), start_date: fd.get('start_date') || null, notes: fd.get('notes') || null };
+        monthly: nOrNull(fd.get('monthly')), start_date: fd.get('start_date') || null, end_date: fd.get('end_date') || null, notes: fd.get('notes') || null };
       if (l) await q(sb.from('loans').update(row).eq('id', l.id)); else await q(sb.from('loans').insert(row));
       await reload();
     });
