@@ -1,0 +1,8 @@
+# Jangan sesekali commit data peribadi atau kredential
+*.env
+.env*
+seed*.sql
+*backup*.json
+*.csv
+supabase/.temp/
+node_modules/

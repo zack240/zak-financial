@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ms">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://*.supabase.co wss://*.supabase.co; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Zak Financial</title>
+<link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+
+<!-- ===== Log masuk ===== -->
+<main id="auth" class="auth" hidden>
+  <div class="auth-card">
+    <div class="brand"><span class="brand-mark">ZF</span><span>Zak Financial</span></div>
+
+    <form id="loginForm" class="stack">
+      <h1>Log masuk</h1>
+      <label>Emel<input id="loginEmail" type="email" autocomplete="username" required></label>
+      <label>Kata laluan<input id="loginPass" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">Masuk</button>
+      <p class="err" id="loginErr"></p>
+    </form>
+
+    <form id="mfaForm" class="stack" hidden>
+      <h1 id="mfaTitle">Pengesahan 2 langkah</h1>
+      <div id="mfaEnroll" hidden>
+        <p class="muted">Imbas QR ini dengan Google Authenticator / Authy, kemudian masukkan kod 6 digit.</p>
+        <img id="mfaQr" class="qr" alt="QR TOTP">
+        <p class="muted small">Atau masukkan kunci: <code id="mfaSecret"></code></p>
+      </div>
+      <label>Kod 6 digit<input id="mfaCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+      <button class="btn primary" type="submit">Sahkan</button>
+      <button class="btn ghost" type="button" id="mfaCancel">Batal &amp; log keluar</button>
+      <p class="err" id="mfaErr"></p>
+    </form>
+  </div>
+</main>
+
+<!-- ===== App ===== -->
+<div id="app" hidden>
+  <header class="top">
+    <div class="brand"><span class="brand-mark">ZF</span><span>Zak Financial</span></div>
+    <nav class="tabs" id="tabs">
+      <button data-view="ringkasan" class="on">Ringkasan</button>
+      <button data-view="rekod">Rekod</button>
+      <button data-view="item">Item</button>
+      <button data-view="pinjaman">Pinjaman</button>
+      <button data-view="tetapan">Tetapan</button>
+    </nav>
+    <div class="top-actions">
+      <button class="btn ghost sm" id="privacyBtn" title="Sorok / tunjuk amaun">Sorok RM</button>
+      <button class="btn ghost sm" id="logoutBtn">Keluar</button>
+    </div>
+  </header>
+  <main id="view" class="view"></main>
+  <div id="toast" class="toast" hidden></div>
+</div>
+
+<dialog id="dlg"><form method="dialog" id="dlgForm" class="stack"></form></dialog>
+
+<script src="vendor/supabase.js"></script>
+<script src="config.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>
