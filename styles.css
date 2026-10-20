@@ -137,6 +137,7 @@ td.r, th.r { text-align: right; }
 tr.inactive td { opacity: .45; }
 .matrix th, .matrix td { text-align: center; padding: 6px 8px; font-size: 13px; }
 .matrix th:first-child, .matrix td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; }
+.ebe td:first-child { white-space: normal; }
 .sym-done { color: var(--good); font-weight: 700; }
 .sym-missed { color: var(--bad); font-weight: 700; }
 .sym-skip { color: var(--warn); font-weight: 700; }

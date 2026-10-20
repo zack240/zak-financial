@@ -135,6 +135,7 @@
       q(sb.from('payslips').select('*').order('month', { ascending: false })),
     ]);
     periods.sort((a, b) => b.month.localeCompare(a.month));
+    payslips.sort((a, b) => b.month.localeCompare(a.month));
     S.settings = Object.fromEntries(settings.map((r) => [r.key, r.value]));
     Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips });
     if (!S.periodId || !periods.find((p) => p.id === S.periodId)) S.periodId = periods[0]?.id || null;
@@ -556,7 +557,9 @@
     const ytd = ps.filter((s) => s.month.startsWith(yr));
     const sum = (rows, k) => round2(rows.reduce((t, s) => t + num(s[k]), 0));
     const stat = last ? round2(num(last.epf) + num(last.socso) + num(last.eis) + num(last.skbbk) + num(last.pcb)) : 0;
-    v.innerHTML = `<div class="row"><h2 class="grow">Slip gaji</h2><button class="btn primary sm" id="addSlip">＋ Slip</button></div>
+    v.innerHTML = `<div class="row"><h2 class="grow">Slip gaji</h2><button class="btn sm" id="importSlip">Import PDF</button><button class="btn primary sm" id="addSlip">＋ Slip</button>
+        <input type="file" id="slipFile" accept="application/pdf" multiple hidden></div>
+      <div id="importBox"></div>
       ${last ? `<div class="grid g4">
         <div class="card kpi"><div class="lbl">Gaji kasar terkini</div><div class="val">${amt(last.gross)}</div><div class="sub">${monthLabel(last.month)} · basic ${rm(last.basic)}</div></div>
         <div class="card kpi"><div class="lbl">Gaji bersih terkini</div><div class="val good">${amt(last.net)}</div><div class="sub">Masuk bank · ${Math.round((num(last.net) / num(last.gross)) * 100)}% dari kasar</div></div>
@@ -573,16 +576,33 @@
         ${ps.map((s) => `<tr><td>${monthLabel(s.month)}</td><td class="r">${amt(s.gross)}</td><td class="r"><b>${amt(s.net)}</b></td><td class="r">${amt(s.epf)}</td>
           <td class="r">${amt(round2(num(s.socso) + num(s.eis)))}</td><td class="r">${num(s.skbbk) ? amt(s.skbbk) : '—'}</td><td class="r">${num(s.staff_house) ? amt(s.staff_house) : '—'}</td>
           <td class="small">${esc(s.position || '')}</td><td class="small muted">${esc(s.note || '')}</td><td class="r"><button class="btn ghost sm" data-edit-slip="${s.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">Belum ada slip.</td></tr>'}
-      </tbody></table></div></div>`;
+      </tbody></table></div></div>
+      ${ps.length ? '<div id="ebeBox"></div>' : ''}`;
     $('#addSlip').onclick = () => slipDialog(null);
+    $('#importSlip').onclick = () => $('#slipFile').click();
+    $('#slipFile').onchange = (e) => { importSlips([...e.target.files]); e.target.value = ''; };
+    if (ps.length) renderEbe($('#ebeBox'));
     $$('[data-edit-slip]', v).forEach((b) => (b.onclick = () => slipDialog(S.payslips.find((s) => s.id === b.dataset.editSlip))));
   }
 
-  function slipDialog(sl) {
+  const SLIP_KEYS = [...SLIP_EARN, ...SLIP_DED, ...SLIP_ER].map(([k]) => k);
+
+  async function saveSlip(row, month, existing) {
+    if (existing) await q(sb.from('payslips').update(row).eq('id', existing.id));
+    else await q(sb.from('payslips').insert({ ...row, month }));
+    // pendapatan bulan tu = gaji bersih slip; slip terkini = pendapatan bulanan dalam tetapan
+    const p = S.periods.find((pp) => pp.month === month);
+    if (p && num(p.income) !== row.net) await q(sb.from('periods').update({ income: row.net }).eq('id', p.id));
+    if (month >= (S.payslips[0]?.month || '')) await q(sb.from('settings').upsert({ key: 'income', value: row.net }));
+  }
+
+  // prefill: angka dari PDF (boleh untuk bulan baru atau ganti slip sedia ada)
+  function slipDialog(sl, prefill) {
     // slip baru: salin angka tetap dari slip terakhir, OT/cuti/komisen kosong
     const last = S.payslips[0] || {};
-    const x = sl || { ...Object.fromEntries([...SLIP_EARN, ...SLIP_DED, ...SLIP_ER].map(([k]) => [k, last[k] ?? 0])), overtime: 0, holiday: 0, commission: 0,
+    const base = sl || { ...Object.fromEntries(SLIP_KEYS.map((k) => [k, last[k] ?? 0])), overtime: 0, holiday: 0, commission: 0,
       position: last.position || '', note: '', month: last.month ? (() => { const d = new Date(last.month + 'T00:00:00'); d.setMonth(d.getMonth() + 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; })() : nextMonthIso() };
+    const x = prefill ? { ...base, ...prefill } : base;
     const f = ([k, l]) => `<label>${l}<input name="${k}" type="number" step="0.01" min="0" value="${num(x[k])}"></label>`;
     dialog(`<h2>${sl ? 'Edit slip ' + monthLabel(sl.month) : 'Slip gaji baru'}</h2>
       <div class="grid g2"><label>Bulan<input name="month" type="month" value="${x.month.slice(0, 7)}" required ${sl ? 'disabled' : ''}></label><label>Jawatan<input name="position" value="${esc(x.position || '')}"></label></div>
@@ -592,17 +612,13 @@
       <label>Nota<input name="note" value="${esc(x.note || '')}" maxlength="200"></label>
       <p class="muted small" id="slipCalc"></p>
       ${sl ? '<button type="button" class="btn ghost danger sm" id="delSlip">Padam slip ini</button>' : ''}`, async (fd) => {
-      const row = Object.fromEntries([...SLIP_EARN, ...SLIP_DED, ...SLIP_ER].map(([k]) => [k, num(fd.get(k))]));
+      const row = Object.fromEntries(SLIP_KEYS.map((k) => [k, num(fd.get(k))]));
       row.gross = round2(SLIP_EARN.reduce((t, [k]) => t + row[k], 0));
       row.net = round2(row.gross - SLIP_DED.reduce((t, [k]) => t + row[k], 0));
       Object.assign(row, { position: fd.get('position') || null, note: fd.get('note') || null });
       const month = sl ? sl.month : fd.get('month') + '-01';
-      if (sl) await q(sb.from('payslips').update(row).eq('id', sl.id));
-      else { if (slipOf(month)) throw new Error('Slip bulan ini dah wujud.'); await q(sb.from('payslips').insert({ ...row, month })); }
-      // pendapatan bulan tu = gaji bersih slip; slip terkini = pendapatan bulanan dalam tetapan
-      const p = S.periods.find((pp) => pp.month === month);
-      if (p && num(p.income) !== row.net) await q(sb.from('periods').update({ income: row.net }).eq('id', p.id));
-      if (month >= (S.payslips[0]?.month || '')) await q(sb.from('settings').upsert({ key: 'income', value: row.net }));
+      if (!sl && slipOf(month)) throw new Error('Slip bulan ini dah wujud.');
+      await saveSlip(row, month, sl);
       await reload(); toast('Slip disimpan · bersih ' + rm(row.net));
     });
     const form = $('#dlgForm');
@@ -615,6 +631,125 @@
     if (sl) $('#delSlip').onclick = async () => {
       if (!confirm(`Padam slip ${monthLabel(sl.month)}?`)) return;
       await q(sb.from('payslips').delete().eq('id', sl.id)); $('#dlg').close(); await reload();
+    };
+  }
+
+  // ---------- import PDF (dibaca dalam browser, fail tak dimuat naik) ----------
+  let pdfLib;
+  function loadPdfJs() {
+    if (!pdfLib) pdfLib = new Promise((res, rej) => {
+      const s = document.createElement('script'); s.src = 'vendor/pdf.min.js';
+      s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js'; res(window.pdfjsLib); };
+      s.onerror = () => { pdfLib = null; rej(new Error('Gagal muat pembaca PDF.')); };
+      document.head.appendChild(s);
+    });
+    return pdfLib;
+  }
+
+  async function importSlips(files) {
+    const box = $('#importBox');
+    if (!files.length) return;
+    box.innerHTML = '<div class="card muted">Membaca PDF…</div>';
+    let lib;
+    try { lib = await loadPdfJs(); } catch (e) { box.innerHTML = `<div class="alert bad">${esc(e.message)}</div>`; return; }
+    const res = [];
+    for (const f of files) {
+      try { res.push({ file: f.name, ...(await window.ZF_SLIP.fromPdf(lib, new Uint8Array(await f.arrayBuffer()))) }); }
+      catch (e) { res.push({ file: f.name, error: e.message }); }
+    }
+    res.sort((a, b) => (a.month || '').localeCompare(b.month || ''));
+    const rowOf = (r) => {
+      const ex = slipOf(r.month);
+      return { ...Object.fromEntries(SLIP_KEYS.map((k) => [k, r[k]])), gross: r.gross, net: r.net, position: r.position || ex?.position || S.payslips[0]?.position || null,
+        note: r.unknown.length ? r.unknown.join('; ') : (ex?.note ?? null) };
+    };
+    const state = (r) => {
+      if (r.error || !r.month) return { cls: 'bad', txt: 'Tak dapat baca format slip ini', can: false };
+      if (!r.ok) return { cls: 'bad', txt: `Tak sepadan dengan slip (kasar ${rm(r.slip_gross)}, bersih ${rm(r.slip_net)}). Buka & semak.`, can: false };
+      const ex = slipOf(r.month);
+      if (!ex) return { cls: 'good', txt: 'Baru', can: true, on: true };
+      const same = SLIP_KEYS.concat('gross', 'net').every((k) => num(ex[k]) === num(r[k]));
+      return same ? { cls: 'muted', txt: 'Dah ada, sama', can: false } : { cls: 'warn', txt: 'Dah ada, angka berbeza. Tick untuk ganti', can: true, on: false };
+    };
+    const st = res.map(state);
+    box.innerHTML = `<div class="card"><div class="card-h"><h2>Import ${res.length} PDF</h2><span class="muted small">Dibaca dalam browser, PDF tak dimuat naik</span></div>
+      <div class="tbl-wrap"><table><thead><tr><th></th><th>Bulan</th><th class="r">Kasar</th><th class="r">Bersih</th><th>Status</th><th></th></tr></thead><tbody>
+        ${res.map((r, i) => `<tr><td><input type="checkbox" data-imp="${i}" ${st[i].on ? 'checked' : ''} ${st[i].can ? '' : 'disabled'} aria-label="Simpan"></td>
+          <td>${r.month ? monthLabel(r.month) : esc(r.file)}</td><td class="r">${r.month ? amt(r.gross) : ''}</td><td class="r">${r.month ? `<b>${amt(r.net)}</b>` : ''}</td>
+          <td class="small ${st[i].cls}">${esc(st[i].txt)}${r.unknown?.length ? `<div class="warn">${esc(r.unknown.join('; '))}</div>` : ''}</td>
+          <td class="r">${r.month ? `<button class="btn ghost sm" data-imp-open="${i}">Buka</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="impSave">Simpan yang ditick</button><button class="btn ghost" id="impClose">Tutup</button></div></div>`;
+    $('#impClose').onclick = () => { box.innerHTML = ''; };
+    $$('[data-imp-open]', box).forEach((b) => (b.onclick = () => { const r = res[b.dataset.impOpen]; slipDialog(slipOf(r.month) || null, { ...rowOf(r), month: r.month }); }));
+    $('#impSave').onclick = async () => {
+      const pick = $$('[data-imp]:checked', box).map((c) => res[c.dataset.imp]);
+      if (!pick.length) return toast('Tiada slip ditick.', true);
+      for (const r of pick) await saveSlip(rowOf(r), r.month, slipOf(r.month));
+      box.innerHTML = ''; await reload(); toast(`${pick.length} slip disimpan.`);
+    };
+  }
+
+  // ---------- pembantu e-BE (anggaran, Borang EA tetap sumber rasmi) ----------
+  // Kadar cukai pemastautin (jadual YA2025)
+  const TAX_BANDS = [[5000, 0], [20000, 0.01], [35000, 0.03], [50000, 0.06], [70000, 0.11], [100000, 0.19], [400000, 0.25], [600000, 0.26], [2000000, 0.28], [Infinity, 0.30]];
+  function taxOf(ci) {
+    let t = 0, lo = 0;
+    for (const [hi, r] of TAX_BANDS) { if (ci > lo) t += (Math.min(ci, hi) - lo) * r; lo = hi; }
+    return round2(ci <= 35000 ? Math.max(0, t - 400) : t); // rebat individu RM400
+  }
+
+  function renderEbe(box) {
+    const years = [...new Set(S.payslips.map((s) => s.month.slice(0, 4)))].sort().reverse();
+    if (!S.ebeYear || !years.includes(S.ebeYear)) S.ebeYear = years[0];
+    const yr = S.ebeYear;
+    const rows = S.payslips.filter((s) => s.month.startsWith(yr));
+    const n = rows.length, lastRow = rows[0];
+    const proj = S.ebeProj !== false && n < 12; // anggaran 12 bulan guna slip terakhir tahun tu
+    const tot = (k) => round2(rows.reduce((t, s) => t + num(s[k]), 0) + (proj ? (12 - n) * num(lastRow[k]) : 0));
+    const saved = S.settings['ebe_' + yr] || {};
+    const gross = tot('gross'), epf = tot('epf'), sosEis = round2(tot('socso') + tot('eis')), pcb = tot('pcb');
+    const life = num(saved.life), other = num(saved.other);
+    const rel = [
+      ['Individu', 9000, 9000],
+      ['KWSP (had RM4,000)', epf, Math.min(epf, 4000)],
+      ['PERKESO + EIS (had RM350)', sosEis, Math.min(sosEis, 350)],
+      ['Insurans hayat / takaful keluarga (had RM3,000)', life, Math.min(life, 3000)],
+      ['Pelepasan lain (anda isi)', other, other],
+    ];
+    const relief = round2(rel.reduce((t, r) => t + r[2], 0));
+    const ci = Math.max(0, round2(gross - relief));
+    const tax = taxOf(ci), bal = round2(tax - pcb);
+    const takaful = S.items.find((i) => i.active && /takaful/i.test(i.name));
+    box.innerHTML = `<div class="card"><div class="card-h"><h2>Pembantu e-BE ${yr}</h2>
+        <div class="row"><select id="ebeYear" aria-label="Tahun" style="width:auto">${years.map((y) => `<option ${y === yr ? 'selected' : ''}>${y}</option>`).join('')}</select>
+          ${n < 12 ? `<button class="btn ghost sm" id="ebeProj">${proj ? `Tunjuk ${n} bulan sebenar` : 'Anggaran 12 bulan'}</button>` : ''}</div></div>
+      <p class="muted small">${proj ? `Anggaran setahun: ${n} slip sebenar + ${12 - n} bulan ikut slip ${monthLabel(lastRow.month)}.` : `${n} slip sebenar.`}</p>
+      <div class="tbl-wrap"><table class="ebe"><tbody>
+        <tr><td><b>Pendapatan penggajian (kasar)</b></td><td class="r"><b>${amt(gross)}</b></td></tr>
+        ${rel.map(([l, raw, use]) => `<tr><td>− ${l}${raw !== use ? ` <span class="small muted">(sebenar ${rm(raw)})</span>` : ''}</td><td class="r">${amt(use)}</td></tr>`).join('')}
+        <tr><td><b>Pendapatan bercukai</b></td><td class="r"><b>${amt(ci)}</b></td></tr>
+        <tr><td>Anggaran cukai${ci <= 35000 ? ' (selepas rebat RM400)' : ''}</td><td class="r">${amt(tax)}</td></tr>
+        <tr><td>PCB dah dipotong</td><td class="r">${amt(pcb)}</td></tr>
+        <tr><td><b>${bal > 0 ? 'Anggaran perlu bayar' : bal < 0 ? 'Anggaran refund' : 'Baki'}</b></td><td class="r"><b class="${bal > 0 ? 'bad' : 'good'}">${amt(Math.abs(bal))}</b></td></tr>
+      </tbody></table></div>
+      <form id="ebeForm" class="grid g3" style="margin-top:12px">
+        <label>Takaful hayat setahun (RM)<input name="life" type="number" step="0.01" min="0" value="${life || ''}" placeholder="${takaful ? rm(num(takaful.amount) * 12).replace('RM', '') : '0'}"></label>
+        <label>Pelepasan lain (RM)<input name="other" type="number" step="0.01" min="0" value="${other || ''}" placeholder="0"></label>
+        <button class="btn" type="submit" style="align-self:end">Simpan pelepasan</button>
+      </form>
+      <ul class="muted small">
+        ${takaful ? `<li>${esc(takaful.name)} ${rm(takaful.amount)}/bulan = ${rm(num(takaful.amount) * 12)} setahun. Semak sijil: bahagian hayat masuk ruang hayat, bahagian perubatan masuk pelepasan insurans perubatan.</li>` : ''}
+        <li>Pelepasan lain contohnya gaya hidup (buku, gajet, internet), sukan dan pemeriksaan perubatan. Simpan resit 7 tahun.</li>
+        <li>SKBBK tak dimasukkan sebab kelayakan pelepasannya belum pasti.</li>
+        <li>Angka rasmi ikut Borang EA dari majikan (sebelum 28 Feb). Isi e-BE di MyTax sebelum 30 April. Kadar cukai ikut jadual YA2025, jadi ini anggaran sahaja.</li>
+      </ul></div>`;
+    $('#ebeYear').onchange = (e) => { S.ebeYear = e.target.value; renderEbe(box); };
+    if ($('#ebeProj')) $('#ebeProj').onclick = () => { S.ebeProj = !proj; renderEbe(box); };
+    $('#ebeForm').onsubmit = async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      await q(sb.from('settings').upsert({ key: 'ebe_' + yr, value: { life: num(fd.get('life')), other: num(fd.get('other')) } }));
+      await reload(); toast('Pelepasan ' + yr + ' disimpan.');
     };
   }
 
