@@ -144,6 +144,12 @@ tr.inactive td { opacity: .45; }
 .matrix th, .matrix td { text-align: center; padding: 6px 8px; font-size: 13px; }
 .matrix th:first-child, .matrix td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; }
 .ebe td:first-child { white-space: normal; }
+/* lajur draf: bulan seterusnya belum dibuka */
+.matrix th.draft, .matrix td.draft { background: var(--warn-soft); border-left: 1px dashed var(--warn); border-right: 1px dashed var(--warn); }
+.matrix th.draft { color: var(--warn); }
+.matrix th.draft .btn { margin-top: 4px; padding: 3px 8px; font-size: 12px; }
+.draft-dot { color: var(--warn); }
+.draft-alert { align-items: center; }
 .sym-done { color: var(--good); font-weight: 700; }
 .sym-missed { color: var(--bad); font-weight: 700; }
 .sym-skip { color: var(--warn); font-weight: 700; }

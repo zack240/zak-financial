@@ -341,9 +341,29 @@
   }
 
   // ================= REKOD =================
+  // Bulan seterusnya yang dah bermula tapi belum dibuka -> { month, payday, daysTo }
+  function nextDraft() {
+    if (!S.periods.length) return null;
+    const month = nextMonthIso();
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const start = new Date(month + 'T00:00:00');
+    if (today < start) return null;
+    // hari gaji dijangka = median hari gaji 3 bulan terakhir
+    const days = S.periods.slice(0, 3).map((p) => p.payday && new Date(p.payday + 'T00:00:00').getDate()).filter(Boolean).sort((a, b) => a - b);
+    const dim = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+    const day = Math.min(dim, days.length ? days[Math.floor(days.length / 2)] : 25);
+    const pay = new Date(start.getFullYear(), start.getMonth(), day);
+    const payday = `${pay.getFullYear()}-${String(pay.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    return { month, payday, daysTo: Math.round((pay - today) / 86400000) };
+  }
+
   function renderRecord(v) {
     const p = S.periods.find((x) => x.id === S.periodId);
+    const dr = nextDraft();
     v.innerHTML = `
+      ${dr ? `<div class="alert ${dr.daysTo < 0 ? 'bad' : 'warn'} row draft-alert"><span class="grow"><b>${monthLabel(dr.month)} belum direkod.</b>
+        Gaji dijangka ~${fmtDate(dr.payday)} ${dr.daysTo > 0 ? `(${dr.daysTo} hari lagi)` : dr.daysTo === 0 ? '(hari ini)' : `(dah lepas ${-dr.daysTo} hari)`}.</span>
+        <button class="btn primary sm" data-open-draft>＋ Buka ${monthLabel(dr.month)}</button></div>` : ''}
       <div class="card">
         <div class="row">
           <select id="periodSel" class="grow" aria-label="Pilih bulan">${S.periods.map((x) => `<option value="${x.id}" ${x.id === S.periodId ? 'selected' : ''}>${monthLabel(x.month)}</option>`).join('')}</select>
@@ -353,10 +373,12 @@
       </div>
       <div id="recBody"></div>`;
     $('#periodSel').onchange = (e) => { S.periodId = e.target.value; renderRecord(v); };
-    $('#newPeriod').onclick = newPeriodDialog;
+    $('#newPeriod').onclick = () => newPeriodDialog(dr);
     $('#toggleMatrix').onclick = () => { S.matrix = !S.matrix; renderRecord(v); };
     const body = $('#recBody');
-    if (S.matrix) return renderMatrix(body);
+    const bindDraft = () => $$('[data-open-draft]', v).forEach((b) => (b.onclick = () => newPeriodDialog(dr)));
+    if (S.matrix) { renderMatrix(body, dr); return bindDraft(); }
+    bindDraft();
     if (!p) { body.innerHTML = '<div class="card muted">Belum ada bulan. Tekan "＋ Bulan baru".</div>'; return; }
 
     const ents = S.entries.filter((e) => e.period_id === p.id);
@@ -426,8 +448,11 @@
     render();
   }
 
-  function renderMatrix(body) {
+  function renderMatrix(body, dr) {
     const ps = S.periods.slice(); // terbaru di kiri
+    // lajur draf: bulan seterusnya yg belum dibuka, item aktif ditunjuk sebagai belum
+    const dHead = dr ? `<th class="draft">${shortMonth(dr.month)}<br><span class="small">~${new Date(dr.payday + 'T00:00:00').getDate()}/${new Date(dr.payday + 'T00:00:00').getMonth() + 1}</span><br><button class="btn primary sm" data-open-draft>＋ Buka</button></th>` : '';
+    const dCell = (i) => (dr ? `<td class="draft">${i.active ? (i.paid_by === 'company' ? '<span class="sym-company">Co</span>' : '<span class="draft-dot" title="Belum">○</span>') : ''}</td>` : '');
     const its = S.items.filter((i) => i.active || S.entries.some((e) => e.item_id === i.id));
     const sym = (e) => {
       if (!e) return '';
@@ -439,12 +464,12 @@
       return '<span class="muted">·</span>';
     };
     body.innerHTML = `<div class="card"><div class="tbl-wrap"><table class="matrix">
-      <thead><tr><th>Item</th>${ps.map((p) => `<th>${shortMonth(p.month)}<br><span class="small">${p.payday ? new Date(p.payday + 'T00:00:00').getDate() + '/' + (new Date(p.payday + 'T00:00:00').getMonth() + 1) : ''}</span></th>`).join('')}</tr></thead>
+      <thead><tr><th>Item</th>${dHead}${ps.map((p) => `<th>${shortMonth(p.month)}<br><span class="small">${p.payday ? new Date(p.payday + 'T00:00:00').getDate() + '/' + (new Date(p.payday + 'T00:00:00').getMonth() + 1) : ''}</span></th>`).join('')}</tr></thead>
       <tbody>
-        ${its.map((i) => `<tr><td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(i.name)}</td>${ps.map((p) => `<td>${sym(S.entries.find((e) => e.period_id === p.id && e.item_id === i.id))}</td>`).join('')}</tr>`).join('')}
-        <tr><td><b>Saving</b></td>${ps.map((p) => `<td><b>${p.leftover === null ? '' : `<span class="amt">${Math.round(num(p.leftover))}</span>`}</b></td>`).join('')}</tr>
+        ${its.map((i) => `<tr><td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(i.name)}</td>${dCell(i)}${ps.map((p) => `<td>${sym(S.entries.find((e) => e.period_id === p.id && e.item_id === i.id))}</td>`).join('')}</tr>`).join('')}
+        <tr><td><b>Saving</b></td>${dr ? '<td class="draft muted">—</td>' : ''}${ps.map((p) => `<td><b>${p.leftover === null ? '' : `<span class="amt">${Math.round(num(p.leftover))}</span>`}</b></td>`).join('')}</tr>
       </tbody></table></div>
-      <p class="muted small">✓ dah bayar · 0 tak bayar · X terlepas · Co company · teks = nota asal sheet. Hover ✓ untuk nota (cth "Pindahan gabung").</p></div>`;
+      <p class="muted small">✓ dah bayar · 0 tak bayar · X terlepas · Co company · ○ draf (bulan belum dibuka) · teks = nota asal sheet. Hover ✓ untuk nota (cth "Pindahan gabung").</p></div>`;
   }
 
   // ================= DIALOG helper =================
@@ -472,11 +497,12 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
   }
 
-  function newPeriodDialog() {
+  function newPeriodDialog(dr) {
     const m = nextMonthIso();
+    const payday = dr?.month === m ? dr.payday : `${m.slice(0, 8)}25`;
     dialog(`<h2>Bulan baru</h2>
       <label>Bulan<input name="month" type="month" value="${m.slice(0, 7)}" required></label>
-      <label>Tarikh gaji masuk<input name="payday" type="date" value="${m.slice(0, 8)}25"></label>
+      <label>Tarikh gaji masuk<input name="payday" type="date" value="${payday}"></label>
       <label>Pendapatan (RM)<input name="income" type="number" step="0.01" min="0" value="${num(slipOf(m)?.net) || income()}" required></label>
       <p class="muted small">Semua item aktif akan dimasukkan sebagai "belum". Item company ditanda "Co".</p>`, async (fd) => {
       const month = fd.get('month') + '-01';
