@@ -526,16 +526,30 @@
 
   // ================= ITEM =================
   function renderItems(v) {
-    const rows = S.items.slice().sort((a, b) => (b.active - a.active) || a.sort - b.sort);
+    const f = S.itemFilter || 'all', fk = S.itemKind || 'all';
+    const tot = (list) => round2(list.filter((i) => i.active && i.paid_by === 'self').reduce((s, i) => s + num(i.amount), 0));
+    const inB = (k) => S.items.filter((i) => k === 'all' || i.bucket === k);
+    const inK = (list) => list.filter((i) => fk === 'all' || i.kind === fk || (fk === 'none' && !KINDS[i.kind]));
+    const rows = (f === 'invest' ? inK(inB('invest')) : inB(f)).sort((a, b) => (b.active - a.active) || a.sort - b.sort);
+    const pill = (attr, k, label, list, on) => `<button class="pill ${on ? 'on' : ''}" ${attr}="${k}">${label} <span class="small">${list.filter((i) => i.active).length} · ${rm(tot(list))}</span></button>`;
+    const inv = inB('invest');
     v.innerHTML = `<div class="card">
       <div class="card-h"><h2>Item bajet bulanan</h2><button class="btn primary sm" id="addItem">＋ Item</button></div>
+      <div class="pills">${pill('data-f', 'all', 'Semua', S.items, f === 'all')}${Object.entries(BUCKETS).map(([k, l]) => pill('data-f', k, l, inB(k), f === k)).join('')}</div>
+      ${f === 'invest' ? `<div class="pills sub">${pill('data-k', 'all', 'Semua jenis', inv, fk === 'all')}${Object.entries(KINDS).map(([k, l]) => pill('data-k', k, l, inv.filter((i) => i.kind === k), fk === k)).join('')}
+        ${inv.some((i) => !KINDS[i.kind]) ? pill('data-k', 'none', 'Belum ditanda', inv.filter((i) => !KINDS[i.kind]), fk === 'none') : ''}</div>` : ''}
       <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Kategori</th><th>Akaun</th><th class="r">Amaun</th><th>Bayar oleh</th><th>Rujukan</th><th></th></tr></thead><tbody>
         ${rows.map((i) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}${i.bucket === 'invest' && i.kind ? `<div class="muted small">${KINDS[i.kind]}</div>` : ''}</td>
           <td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(acct(i.account_id)?.code || '—')}</td>
           <td class="r">${amt(i.amount)}</td><td>${i.paid_by === 'company' ? 'Company' : 'Sendiri'}</td><td class="small"><span class="amt">${esc(i.ref_no || '')}</span></td>
-          <td class="r"><button class="btn ghost sm" data-edit="${i.id}">Edit</button></td></tr>`).join('')}
+          <td class="r"><button class="btn ghost sm" data-edit="${i.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Tiada item.</td></tr>'}
       </tbody></table></div></div>`;
-    $('#addItem').onclick = () => itemDialog(null);
+    $$('[data-f]', v).forEach((b) => (b.onclick = () => { S.itemFilter = b.dataset.f; S.itemKind = 'all'; renderItems(v); }));
+    $$('[data-k]', v).forEach((b) => (b.onclick = () => { S.itemKind = b.dataset.k; renderItems(v); }));
+    // telefon: pill aktif mungkin di luar skrin (baris boleh swipe), tarik ke tengah
+    $$('.pills', v).forEach((row) => { const on = $('.pill.on', row); if (on && row.scrollWidth > row.clientWidth) row.scrollLeft = on.offsetLeft - row.offsetLeft - (row.clientWidth - on.offsetWidth) / 2; });
+    // item baru ikut tapisan semasa
+    $('#addItem').onclick = () => itemDialog(null, f !== 'all' ? { bucket: f, kind: f === 'invest' && KINDS[fk] ? fk : null } : undefined);
     $$('[data-edit]', v).forEach((b) => (b.onclick = () => itemDialog(S.items.find((i) => i.id === b.dataset.edit))));
   }
 

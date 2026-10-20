@@ -159,6 +159,18 @@ tr.inactive td { opacity: .45; }
 .citem { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .citem .nm { font-weight: 600; }
 .citem .meta { font-size: 13px; color: var(--muted); }
+/* tapisan item (pill) */
+.pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.pills.sub { margin-top: -4px; }
+.pill { appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-weight: 600; font-size: 14px;
+  padding: 7px 12px; border-radius: 99px; cursor: pointer; display: inline-flex; gap: 6px; align-items: baseline; }
+.pill .small { color: var(--muted); font-weight: 500; }
+.pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pill.on .small { color: rgba(255,255,255,.8); }
+.pills.sub .pill { font-size: 13px; padding: 5px 10px; }
+@media (max-width: 560px) { .pills { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-left: -18px; margin-right: -18px; padding: 0 18px; } .pill { flex: none; } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.on { color: #0b1a10; } :root:not([data-theme="light"]) .pill.on .small { color: rgba(11,26,16,.75); } }
+:root[data-theme="dark"] .pill.on { color: #0b1a10; } :root[data-theme="dark"] .pill.on .small { color: rgba(11,26,16,.75); }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .chip { appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: inherit;
   font-size: 13px; font-weight: 700; min-width: 36px; padding: 5px 8px; border-radius: 99px; cursor: pointer; }
