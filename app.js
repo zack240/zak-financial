@@ -31,7 +31,7 @@
 
   const S = {
     settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [],
-    view: 'ringkasan', periodId: null, matrix: false,
+    view: 'ringkasan', periodId: null, matrix: true, // Rekod buka dalam Jadual penuh
   };
 
   // ---------- toast ----------
@@ -427,7 +427,7 @@
   }
 
   function renderMatrix(body) {
-    const ps = S.periods.slice().reverse();
+    const ps = S.periods.slice(); // terbaru di kiri
     const its = S.items.filter((i) => i.active || S.entries.some((e) => e.item_id === i.id));
     const sym = (e) => {
       if (!e) return '';
