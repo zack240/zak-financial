@@ -8,6 +8,7 @@
 
   const IDLE_MS = 15 * 60 * 1000;
   const BUCKETS = { komitmen: 'Komitmen', invest: 'Invest', reward: 'Self Reward' };
+  const KINDS = { kecemasan: 'Dana kecemasan', pelaburan: 'Pelaburan', matlamat: 'Matlamat belanja' }; // jenis dalam bucket invest
   const STATUS = [
     { k: 'done', sym: '✓', label: 'Dah bayar' },
     { k: 'skip', sym: '0', label: 'Tak bayar bulan ni' },
@@ -223,6 +224,7 @@
                 <span class="${b.bad ? b.tone : ''}">${amt(b.actual)}</span><span class="muted small">/ ${amt(b.target)}</span></div>
               <div class="bar"><i class="${b.bad ? (b.tone === 'bad' ? 'over' : 'warn') : ''}" data-w="${w}"></i></div>
               <div class="small ${b.tone === 'good' ? 'good' : b.tone}">${b.msg}</div>
+              ${b.k === 'invest' ? `<div class="small muted">${kindSplit(items).map(([l, n]) => `${l} ${rm(n)}`).join(' · ')}</div>` : ''}
             </div>`;
           }).join('')}
           ${diff > 0 ? `<div class="bucket">
@@ -260,6 +262,15 @@
     $$('[data-advice-item]', v).forEach((b) => (b.onclick = () => itemDialog(null, JSON.parse(b.dataset.adviceItem))));
   }
 
+  // pecahan bucket invest ikut jenis: [[label, jumlah]]
+  function kindSplit(items) {
+    const inv = items.filter((i) => i.bucket === 'invest');
+    const out = Object.entries(KINDS).map(([k, l]) => [l, round2(inv.filter((i) => i.kind === k).reduce((s, i) => s + num(i.amount), 0))]);
+    const none = round2(inv.filter((i) => !KINDS[i.kind]).reduce((s, i) => s + num(i.amount), 0));
+    if (none) out.push(['Belum ditanda', none]);
+    return out.filter(([, n]) => n);
+  }
+
   // ---------- cadangan penganalisis (peraturan, dari data sebenar) ----------
   const PHONE_RE = /celcom|maxis|digi|umobile|u mobile|unifi mobile|yes\b|hotlink|telefon|phone bill/i;
   const SUBS_RE = /spotify|netflix|icloud|njoi|astro|youtube|disney|viu|apple music|google one|prime/i;
@@ -272,17 +283,17 @@
     const companyNeeds = S.items.filter((i) => i.active && i.paid_by === 'company' && i.bucket === 'komitmen').reduce((s, i) => s + num(i.amount), 0);
     const needs = round2(K.actual + companyNeeds); // keperluan sebenar termasuk yg dipotong dari gaji (cth staff house)
     const efTarget = Math.ceil((needs * 3) / 100) * 100;
-    const ef = items.find((i) => EF_RE.test(i.name));
+    const ef = items.find((i) => i.kind === 'kecemasan' || EF_RE.test(i.name));
     const recs = []; // { tone, title, body, action }
     const suggestEf = diff > 0 ? Math.max(50, Math.floor(diff / 10) * 10) : 100;
 
     if (!ef) recs.push({ tone: 'bad', title: 'Tiada dana kecemasan',
       body: `Keutamaan nombor satu. Sasaran 3 bulan keperluan ≈ <b>${rm(efTarget)}</b> (keperluan ${rm(needs)}/bulan termasuk rumah). Dengan ${rm(suggestEf)}/bulan, siap dalam ~${Math.ceil(efTarget / suggestEf)} bulan. Simpan di akaun berasingan yang tiada kad debit.`,
-      action: { label: `Cipta item Dana kecemasan ${rm(suggestEf)}`, item: { name: 'Dana kecemasan', amount: suggestEf, bucket: 'invest', notes: `Sasaran ${rm(efTarget)} (3 bulan keperluan)` } } });
+      action: { label: `Cipta item Dana kecemasan ${rm(suggestEf)}`, item: { name: 'Dana kecemasan', amount: suggestEf, bucket: 'invest', kind: 'kecemasan', notes: `Sasaran ${rm(efTarget)} (3 bulan keperluan)` } } });
     else recs.push({ tone: 'good', title: `Dana kecemasan ${rm(ef.amount)}/bulan`,
       body: `Sasaran ${rm(efTarget)} siap dalam ~${num(ef.amount) ? Math.ceil(efTarget / num(ef.amount)) : '∞'} bulan dari kosong. Lepas capai, alihkan caruman ini ke pelaburan jangka panjang.` });
 
-    if (diff > 0) recs.push({ tone: 'warn', title: `${rm(diff)} belum diagih (${pctOf(diff)}%)`,
+    if (diff >= 20) recs.push({ tone: 'warn', title: `${rm(diff)} belum diagih (${pctOf(diff)}%)`,
       body: ef ? 'Beri setiap ringgit tugas: tambah ke dana kecemasan atau pelaburan, supaya tak bocor ke belanja harian.' : `Cadangan: ${rm(suggestEf)} ke dana kecemasan${diff - suggestEf > 0 ? `, baki ${rm(round2(diff - suggestEf))} sebagai penampan` : ''}.` });
 
     const jpa = S.loans.filter((l) => l.active && !num(l.monthly));
@@ -301,7 +312,7 @@
     if (!R.bad && R.actual < R.target) recs.push({ tone: 'good', title: `Self reward ${R.real}% (had ${R.pct}%)`,
       body: `Bagus. Had ${R.pct}% ialah siling, bukan sasaran. Baki ruang ${rm(round2(R.target - R.actual))} lebih berguna jadi simpanan.` });
     if (I.actual >= I.target) recs.push({ tone: 'good', title: `Simpanan & invest ${I.real}% (sasaran ${I.pct}%)`,
-      body: 'Atas sasaran. Pastikan duit untuk matlamat belanja (fon, kereta, kahwin, konsert) ada sasaran amaun dan tarikh, dan diasingkan dari pelaburan jangka panjang (emas, ASNB).' });
+      body: `Atas sasaran. ${kindSplit(items).map(([l, n]) => `${l} ${rm(n)} (${pctOf(n)}%)`).join(', ')}. Matlamat belanja perlu ada sasaran amaun dan tarikh. Hanya pelaburan yang membina kekayaan jangka panjang.` });
     if (K.bad) recs.push({ tone: K.tone, title: `Komitmen ${K.real}% (sasaran ${K.pct}%)`,
       body: `Item terbesar: ${items.filter((i) => i.bucket === 'komitmen').sort((a, b) => num(b.amount) - num(a.amount)).slice(0, 3).map((i) => `${esc(i.name)} ${pctOf(i.amount)}%`).join(', ')}.${companyNeeds ? ` Rumah ${rm(companyNeeds)} dipotong dari gaji, jadi keperluan sebenar ${pctOf(needs)}% dari gaji bersih.` : ''}` });
 
@@ -519,7 +530,7 @@
     v.innerHTML = `<div class="card">
       <div class="card-h"><h2>Item bajet bulanan</h2><button class="btn primary sm" id="addItem">＋ Item</button></div>
       <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Kategori</th><th>Akaun</th><th class="r">Amaun</th><th>Bayar oleh</th><th>Rujukan</th><th></th></tr></thead><tbody>
-        ${rows.map((i) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}</td>
+        ${rows.map((i) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}${i.bucket === 'invest' && i.kind ? `<div class="muted small">${KINDS[i.kind]}</div>` : ''}</td>
           <td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(acct(i.account_id)?.code || '—')}</td>
           <td class="r">${amt(i.amount)}</td><td>${i.paid_by === 'company' ? 'Company' : 'Sendiri'}</td><td class="small"><span class="amt">${esc(i.ref_no || '')}</span></td>
           <td class="r"><button class="btn ghost sm" data-edit="${i.id}">Edit</button></td></tr>`).join('')}
@@ -534,13 +545,14 @@
       <label>Nama<input name="name" value="${esc(i.name)}" required maxlength="60"></label>
       <div class="grid g2"><label>Amaun (RM)<input name="amount" type="number" step="0.01" min="0" value="${num(i.amount)}" required></label>
         <label>Kategori<select name="bucket">${Object.entries(BUCKETS).map(([k, l]) => `<option value="${k}" ${i.bucket === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+      <label>Jenis (untuk Invest)<select name="kind"><option value="">—</option>${Object.entries(KINDS).map(([k, l]) => `<option value="${k}" ${i.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <div class="grid g2"><label>Akaun<select name="account_id">${optAccounts(i.account_id)}</select></label>
         <label>Bayar oleh<select name="paid_by"><option value="self" ${i.paid_by === 'self' ? 'selected' : ''}>Sendiri</option><option value="company" ${i.paid_by === 'company' ? 'selected' : ''}>Company</option></select></label></div>
       <label>No. rujukan / akaun<input name="ref_no" value="${esc(i.ref_no || '')}" maxlength="60"></label>
       <label>Nota<input name="notes" value="${esc(i.notes || '')}" maxlength="200"></label>
       <div class="grid g2"><label>Susunan<input name="sort" type="number" value="${i.sort}"></label>
         <label class="check"><input type="checkbox" name="active" ${i.active ? 'checked' : ''}> Aktif</label></div>`, async (fd) => {
-      const row = { name: fd.get('name').trim(), amount: Number(fd.get('amount')), bucket: fd.get('bucket'), account_id: fd.get('account_id') || null,
+      const row = { name: fd.get('name').trim(), amount: Number(fd.get('amount')), bucket: fd.get('bucket'), kind: fd.get('bucket') === 'invest' ? (fd.get('kind') || null) : null, account_id: fd.get('account_id') || null,
         paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on' };
       if (it) await q(sb.from('items').update(row).eq('id', it.id)); else await q(sb.from('items').insert(row));
       await reload(); toast('Item disimpan.');
