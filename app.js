@@ -137,6 +137,7 @@
     ]);
     periods.sort((a, b) => b.month.localeCompare(a.month));
     payslips.sort((a, b) => b.month.localeCompare(a.month));
+    accounts.sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code));
     S.settings = Object.fromEntries(settings.map((r) => [r.key, r.value]));
     Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips });
     if (!S.periodId || !periods.find((p) => p.id === S.periodId)) S.periodId = periods[0]?.id || null;
@@ -896,9 +897,11 @@
       </div>
       <div class="card"><div class="card-h"><h2>Akaun bank / e-wallet</h2><button class="btn sm" id="addAcct">＋ Akaun</button></div>
         <div class="tbl-wrap"><table><thead><tr><th>Kod</th><th>Nama</th><th>No. Acc</th><th>Peranan</th><th class="r">Had simpanan</th><th></th></tr></thead><tbody>
-          ${S.accounts.map((a) => `<tr class="${a.active ? '' : 'inactive'}"><td><span class="dot" style="--acct:${esc(a.color)}"></span><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td>
+          ${S.accounts.map((a, idx) => `<tr class="${a.active ? '' : 'inactive'}"><td><span class="dot" style="--acct:${esc(a.color)}"></span><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td>
             <td>${a.account_no ? `<span class="amt acc-no">${esc(maskAcc(a.account_no))}</span> <button class="btn ghost sm" data-copy-acct="${a.id}" title="Salin nombor penuh">Salin</button>` : '<span class="muted">—</span>'}</td><td>${esc(a.role || '')}</td>
-            <td class="r">${a.balance_cap ? amt(a.balance_cap) : '—'}</td><td class="r"><button class="btn ghost sm" data-edit-acct="${a.id}">Edit</button></td></tr>`).join('')}
+            <td class="r">${a.balance_cap ? amt(a.balance_cap) : '—'}</td>
+            <td class="r nowrap"><button class="btn ghost sm" data-move-acct="${a.id}" data-dir="-1" title="Naik" aria-label="Naik ${esc(a.code)}" ${idx === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-move-acct="${a.id}" data-dir="1" title="Turun" aria-label="Turun ${esc(a.code)}" ${idx === S.accounts.length - 1 ? 'disabled' : ''}>↓</button>
+              <button class="btn ghost sm" data-edit-acct="${a.id}">Edit</button></td></tr>`).join('')}
         </tbody></table></div></div>
       <div id="auditBox"></div>`;
     $('#setForm').onsubmit = async (e) => {
@@ -910,6 +913,7 @@
     };
     $('#addAcct').onclick = () => acctDialog(null);
     $$('[data-edit-acct]', v).forEach((b) => (b.onclick = () => acctDialog(S.accounts.find((a) => a.id === b.dataset.editAcct))));
+    $$('[data-move-acct]', v).forEach((b) => (b.onclick = () => moveAcct(b.dataset.moveAcct, Number(b.dataset.dir))));
     $$('[data-copy-acct]', v).forEach((b) => (b.onclick = async () => {
       const a = S.accounts.find((x) => x.id === b.dataset.copyAcct);
       try { await navigator.clipboard.writeText(a.account_no.replace(/[\s-]/g, '')); toast(`No. akaun ${a.code} disalin.`); }
@@ -918,6 +922,17 @@
     $('#expJson').onclick = exportJson;
     $('#expCsv').onclick = exportCsv;
     $('#showAudit').onclick = showAudit;
+  }
+
+  // tukar kedudukan akaun, kemudian nomborkan semula 1..n (betulkan susunan sama/berlubang)
+  async function moveAcct(id, dir) {
+    const list = S.accounts.slice();
+    const i = list.findIndex((a) => a.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    const changed = list.map((a, k) => ({ a, sort: k + 1 })).filter(({ a, sort }) => a.sort !== sort);
+    await Promise.all(changed.map(({ a, sort }) => q(sb.from('accounts').update({ sort }).eq('id', a.id))));
+    await reload();
   }
 
   // tunjuk 4 digit terakhir sahaja (elak terdedah bila skrin dikongsi)
