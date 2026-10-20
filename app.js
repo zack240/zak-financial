@@ -183,10 +183,18 @@
     const dMiss = re.filter((e) => e.status === 'missed').length;
     const disc = dDone + dMiss ? Math.round((dDone / (dDone + dMiss)) * 100) : null;
 
+    // arah "baik" setiap bucket: komitmen & reward elok bawah sasaran, invest elok atas sasaran
+    const GOOD_DIR = { komitmen: 'under', invest: 'over', reward: 'under' };
     const byBucket = Object.keys(BUCKETS).map((k) => {
       const actual = round2(items.filter((i) => i.bucket === k).reduce((s, i) => s + num(i.amount), 0));
       const target = round2(inc * num(sp[k]) / 100);
-      return { k, actual, target, pct: num(sp[k]) };
+      const gap = round2(actual - target);
+      const bad = GOOD_DIR[k] === 'under' ? gap > 0 : gap < 0;
+      const tone = !bad ? 'good' : Math.abs(gap) > target * 0.05 ? 'bad' : 'warn';
+      const msg = k === 'komitmen' ? (gap > 0 ? `Lebih ${amt(gap)} dari sasaran` : `Bawah sasaran ${amt(-gap)}, bagus`)
+        : k === 'invest' ? (gap >= 0 ? `Lebih ${amt(gap)} dari sasaran, bagus` : `Kurang ${amt(-gap)} dari sasaran`)
+        : (gap > 0 ? `Lebih ${amt(gap)} dari had` : `Belanja ${amt(-gap)} bawah had, tak perlu dihabiskan`);
+      return { k, actual, target, pct: num(sp[k]), real: inc ? round2(actual / inc * 100) : 0, tone, bad, msg };
     });
 
     const accts = S.accounts.filter((a) => a.active).map((a) => {
@@ -210,14 +218,17 @@
           <div class="card-h"><h2>Peraturan ${byBucket.map((b) => b.pct).join('/')}</h2><span class="muted small">Sasaran vs sebenar</span></div>
           ${byBucket.map((b) => {
             const w = b.target ? Math.min(100, (b.actual / b.target) * 100) : 0;
-            const over = b.actual > b.target;
             return `<div class="bucket">
-              <div class="row"><b class="grow">${BUCKETS[b.k]} <span class="muted small">${b.pct}%</span></b>
-                <span class="${over ? 'bad' : ''}">${amt(b.actual)}</span><span class="muted small">/ ${amt(b.target)}</span></div>
-              <div class="bar"><i class="${over ? 'over' : ''}" data-w="${w}"></i></div>
-              <div class="muted small">${over ? `Lebih ${amt(b.actual - b.target)} dari sasaran` : `Baki ruang ${amt(b.target - b.actual)}`}</div>
+              <div class="row"><b class="grow">${BUCKETS[b.k]} <span class="muted small">sasaran ${b.pct}% · sebenar ${b.real}%</span></b>
+                <span class="${b.bad ? b.tone : ''}">${amt(b.actual)}</span><span class="muted small">/ ${amt(b.target)}</span></div>
+              <div class="bar"><i class="${b.bad ? (b.tone === 'bad' ? 'over' : 'warn') : ''}" data-w="${w}"></i></div>
+              <div class="small ${b.tone === 'good' ? 'good' : b.tone}">${b.msg}</div>
             </div>`;
           }).join('')}
+          ${diff > 0 ? `<div class="bucket">
+              <div class="row"><b class="grow">Belum diagih <span class="muted small">${inc ? round2(diff / inc * 100) : 0}%</span></b><span class="warn">${amt(diff)}</span></div>
+              <div class="small muted">Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.</div>
+            </div>` : ''}
         </div>
         <div class="card">
           <div class="card-h"><h2>Simpanan bulanan</h2><span class="muted small">Baki ("ALL BALANCE") setiap bulan</span></div>
@@ -228,6 +239,8 @@
           </div>
         </div>
       </div>
+
+      ${adviceCard(inc, items, byBucket, diff)}
 
       <div class="card">
         <div class="card-h"><h2>Pindahan hari gaji</h2><span class="muted small">Berapa nak masuk ke setiap akaun bila gaji masuk</span></div>
@@ -244,6 +257,61 @@
         ${company.length ? `<p class="muted small" style="margin-top:12px">Dibayar company (tak dikira): ${company.map((i) => `${esc(i.name)} ${amt(i.amount)}`).join(', ')}</p>` : ''}
       </div>`;
     $$('.bar > i', v).forEach((i) => { i.style.width = i.dataset.w + '%'; });
+    $$('[data-advice-item]', v).forEach((b) => (b.onclick = () => itemDialog(null, JSON.parse(b.dataset.adviceItem))));
+  }
+
+  // ---------- cadangan penganalisis (peraturan, dari data sebenar) ----------
+  const PHONE_RE = /celcom|maxis|digi|umobile|u mobile|unifi mobile|yes\b|hotlink|telefon|phone bill/i;
+  const SUBS_RE = /spotify|netflix|icloud|njoi|astro|youtube|disney|viu|apple music|google one|prime/i;
+  const EF_RE = /kecemasan|emergency/i;
+
+  function adviceCard(inc, items, byBucket, diff) {
+    if (!inc) return '';
+    const pctOf = (n) => round2(num(n) / inc * 100);
+    const K = byBucket.find((b) => b.k === 'komitmen'), I = byBucket.find((b) => b.k === 'invest'), R = byBucket.find((b) => b.k === 'reward');
+    const companyNeeds = S.items.filter((i) => i.active && i.paid_by === 'company' && i.bucket === 'komitmen').reduce((s, i) => s + num(i.amount), 0);
+    const needs = round2(K.actual + companyNeeds); // keperluan sebenar termasuk yg dipotong dari gaji (cth staff house)
+    const efTarget = Math.ceil((needs * 3) / 100) * 100;
+    const ef = items.find((i) => EF_RE.test(i.name));
+    const recs = []; // { tone, title, body, action }
+    const suggestEf = diff > 0 ? Math.max(50, Math.floor(diff / 10) * 10) : 100;
+
+    if (!ef) recs.push({ tone: 'bad', title: 'Tiada dana kecemasan',
+      body: `Keutamaan nombor satu. Sasaran 3 bulan keperluan ≈ <b>${rm(efTarget)}</b> (keperluan ${rm(needs)}/bulan termasuk rumah). Dengan ${rm(suggestEf)}/bulan, siap dalam ~${Math.ceil(efTarget / suggestEf)} bulan. Simpan di akaun berasingan yang tiada kad debit.`,
+      action: { label: `Cipta item Dana kecemasan ${rm(suggestEf)}`, item: { name: 'Dana kecemasan', amount: suggestEf, bucket: 'invest', notes: `Sasaran ${rm(efTarget)} (3 bulan keperluan)` } } });
+    else recs.push({ tone: 'good', title: `Dana kecemasan ${rm(ef.amount)}/bulan`,
+      body: `Sasaran ${rm(efTarget)} siap dalam ~${num(ef.amount) ? Math.ceil(efTarget / num(ef.amount)) : '∞'} bulan dari kosong. Lepas capai, alihkan caruman ini ke pelaburan jangka panjang.` });
+
+    if (diff > 0) recs.push({ tone: 'warn', title: `${rm(diff)} belum diagih (${pctOf(diff)}%)`,
+      body: ef ? 'Beri setiap ringgit tugas: tambah ke dana kecemasan atau pelaburan, supaya tak bocor ke belanja harian.' : `Cadangan: ${rm(suggestEf)} ke dana kecemasan${diff - suggestEf > 0 ? `, baki ${rm(round2(diff - suggestEf))} sebagai penampan` : ''}.` });
+
+    const jpa = S.loans.filter((l) => l.active && !num(l.monthly));
+    for (const l of jpa) recs.push({ tone: 'warn', title: `${esc(l.name)}: bayaran belum diketahui`,
+      body: `Bila bayaran ${esc(l.name)} bermula, komitmen akan naik melebihi ${K.pct}%. Kalau ada "belum diagih", jangan biasakan diri belanja duit tu. Ia akan diperlukan untuk ansuran ini.` });
+
+    const phone = items.filter((i) => i.bucket === 'komitmen' && PHONE_RE.test(i.name) && num(i.amount) > 100);
+    for (const p of phone) recs.push({ tone: 'warn', title: `${esc(p.name)} ${rm(p.amount)} (${pctOf(p.amount)}% gaji)`,
+      body: `Plan telefon biasa RM40–100. Kalau ${rm(p.amount)} termasuk ansuran fon, catat tarikh tamat dalam nota item. Kalau tak, turun plan boleh jimat ~${rm(num(p.amount) - 100)}/bulan = ${rm((num(p.amount) - 100) * 12)} setahun.` });
+
+    const subs = items.filter((i) => SUBS_RE.test(i.name));
+    const subsTot = round2(subs.reduce((s, i) => s + num(i.amount), 0));
+    if (subs.length >= 2) recs.push({ tone: 'muted', title: `Langganan ${rm(subsTot)}/bulan = ${rm(subsTot * 12)} setahun`,
+      body: `${subs.map((i) => esc(i.name)).join(', ')}. Semak yang jarang guna, atau kongsi plan keluarga.` });
+
+    if (!R.bad && R.actual < R.target) recs.push({ tone: 'good', title: `Self reward ${R.real}% (had ${R.pct}%)`,
+      body: `Bagus. Had ${R.pct}% ialah siling, bukan sasaran. Baki ruang ${rm(round2(R.target - R.actual))} lebih berguna jadi simpanan.` });
+    if (I.actual >= I.target) recs.push({ tone: 'good', title: `Simpanan & invest ${I.real}% (sasaran ${I.pct}%)`,
+      body: 'Atas sasaran. Pastikan duit untuk matlamat belanja (fon, kereta, kahwin, konsert) ada sasaran amaun dan tarikh, dan diasingkan dari pelaburan jangka panjang (emas, ASNB).' });
+    if (K.bad) recs.push({ tone: K.tone, title: `Komitmen ${K.real}% (sasaran ${K.pct}%)`,
+      body: `Item terbesar: ${items.filter((i) => i.bucket === 'komitmen').sort((a, b) => num(b.amount) - num(a.amount)).slice(0, 3).map((i) => `${esc(i.name)} ${pctOf(i.amount)}%`).join(', ')}.${companyNeeds ? ` Rumah ${rm(companyNeeds)} dipotong dari gaji, jadi keperluan sebenar ${pctOf(needs)}% dari gaji bersih.` : ''}` });
+
+    // unjuran selepas ikut cadangan dana kecemasan
+    const after = !ef && diff > 0 ? { k: K.real, i: pctOf(I.actual + suggestEf), r: R.real, u: pctOf(diff - suggestEf) } : null;
+    return `<div class="card"><div class="card-h"><h2>Cadangan penganalisis</h2><span class="muted small">Ikut gaji bersih ${rm(inc)}</span></div>
+      <div class="advice">${recs.map((r) => `<div class="adv ${r.tone}"><b>${r.title}</b><div class="small">${r.body}</div>
+        ${r.action ? `<button class="btn sm primary" data-advice-item='${esc(JSON.stringify(r.action.item))}'>${r.action.label}</button>` : ''}</div>`).join('')}</div>
+      ${after ? `<p class="small muted" style="margin-top:12px">Selepas cadangan: Komitmen ${after.k}% · Simpanan &amp; invest ${after.i}% · Self reward ${after.r}% · Belum diagih ${after.u}%. Lebih baik dari 60/20/20 sebab simpanan lebih tinggi.</p>` : ''}
+    </div>`;
   }
 
   function savingsChart() {
@@ -460,8 +528,8 @@
     $$('[data-edit]', v).forEach((b) => (b.onclick = () => itemDialog(S.items.find((i) => i.id === b.dataset.edit))));
   }
 
-  function itemDialog(it) {
-    const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true };
+  function itemDialog(it, prefill) {
+    const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true, ...prefill };
     dialog(`<h2>${it ? 'Edit item' : 'Item baru'}</h2>
       <label>Nama<input name="name" value="${esc(i.name)}" required maxlength="60"></label>
       <div class="grid g2"><label>Amaun (RM)<input name="amount" type="number" step="0.01" min="0" value="${num(i.amount)}" required></label>
