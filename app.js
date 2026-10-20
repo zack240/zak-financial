@@ -464,12 +464,14 @@
       return '<span class="muted">·</span>';
     };
     body.innerHTML = `<div class="card"><div class="tbl-wrap"><table class="matrix">
-      <thead><tr><th>Item</th>${dHead}${ps.map((p) => `<th>${shortMonth(p.month)}<br><span class="small">${p.payday ? new Date(p.payday + 'T00:00:00').getDate() + '/' + (new Date(p.payday + 'T00:00:00').getMonth() + 1) : ''}</span></th>`).join('')}</tr></thead>
+      <thead><tr><th>Item</th><th class="amt-col">Amaun</th>${dHead}${ps.map((p) => `<th>${shortMonth(p.month)}<br><span class="small">${p.payday ? new Date(p.payday + 'T00:00:00').getDate() + '/' + (new Date(p.payday + 'T00:00:00').getMonth() + 1) : ''}</span></th>`).join('')}</tr></thead>
       <tbody>
-        ${its.map((i) => `<tr><td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(i.name)}</td>${dCell(i)}${ps.map((p) => `<td>${sym(S.entries.find((e) => e.period_id === p.id && e.item_id === i.id))}</td>`).join('')}</tr>`).join('')}
-        <tr><td><b>Saving</b></td>${dr ? '<td class="draft muted">—</td>' : ''}${ps.map((p) => `<td><b>${p.leftover === null ? '' : `<span class="amt">${Math.round(num(p.leftover))}</span>`}</b></td>`).join('')}</tr>
+        ${its.map((i) => `<tr><td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(i.name)}</td><td class="amt-col"><span class="amt ${i.paid_by === 'company' ? 'muted' : ''}">${i.active ? rm(i.amount) : ''}</span></td>${dCell(i)}${ps.map((p) => `<td>${sym(S.entries.find((e) => e.period_id === p.id && e.item_id === i.id))}</td>`).join('')}</tr>`).join('')}
+        <tr><td><b>Saving</b></td><td class="amt-col"></td>${dr ? '<td class="draft muted">—</td>' : ''}${ps.map((p) => `<td><b>${p.leftover === null ? '' : `<span class="amt">${Math.round(num(p.leftover))}</span>`}</b></td>`).join('')}</tr>
       </tbody></table></div>
       <p class="muted small">✓ dah bayar · 0 tak bayar · X terlepas · Co company · ○ draf (bulan belum dibuka) · teks = nota asal sheet. Hover ✓ untuk nota (cth "Pindahan gabung").</p></div>`;
+    const w = $('table.matrix th', body)?.offsetWidth || 0;
+    $$('table.matrix .amt-col', body).forEach((c) => { c.style.left = w + 'px'; });
   }
 
   // ================= DIALOG helper =================

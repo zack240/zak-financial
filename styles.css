@@ -143,6 +143,7 @@ td.r, th.r { text-align: right; }
 tr.inactive td { opacity: .45; }
 .matrix th, .matrix td { text-align: center; padding: 6px 8px; font-size: 13px; }
 .matrix th:first-child, .matrix td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; }
+.matrix .amt-col { text-align: right; position: sticky; background: var(--surface); z-index: 1; border-right: 1px solid var(--line); font-size: 13px; }
 .ebe td:first-child { white-space: normal; }
 /* lajur draf: bulan seterusnya belum dibuka */
 .matrix th.draft, .matrix td.draft { background: var(--warn-soft); border-left: 1px dashed var(--warn); border-right: 1px dashed var(--warn); }
