@@ -29,7 +29,7 @@
   const monthsBetween = (a, b) => { const x = new Date(a + 'T00:00:00'), y = new Date(b + 'T00:00:00'); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth(); };
 
   const S = {
-    settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [],
+    settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [],
     view: 'ringkasan', periodId: null, matrix: false,
   };
 
@@ -102,7 +102,7 @@
   $('#logoutBtn').addEventListener('click', logout);
   async function logout() {
     await sb.auth.signOut();
-    Object.assign(S, { settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [] });
+    Object.assign(S, { settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [] });
     $('#view').innerHTML = '';
     showLogin();
   }
@@ -123,7 +123,7 @@
 
   // ================= DATA =================
   async function loadAll() {
-    const [settings, accounts, items, periods, entries, transfers, loans, payments] = await Promise.all([
+    const [settings, accounts, items, periods, entries, transfers, loans, payments, payslips] = await Promise.all([
       q(sb.from('settings').select('*')),
       q(sb.from('accounts').select('*').order('sort')),
       q(sb.from('items').select('*').order('sort')),
@@ -132,16 +132,18 @@
       q(sb.from('transfers').select('*').order('created_at')),
       q(sb.from('loans').select('*').order('created_at')),
       q(sb.from('loan_payments').select('*').order('paid_on', { ascending: false })),
+      q(sb.from('payslips').select('*').order('month', { ascending: false })),
     ]);
     periods.sort((a, b) => b.month.localeCompare(a.month));
     S.settings = Object.fromEntries(settings.map((r) => [r.key, r.value]));
-    Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments });
+    Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips });
     if (!S.periodId || !periods.find((p) => p.id === S.periodId)) S.periodId = periods[0]?.id || null;
   }
 
   const income = () => num(S.settings.income ?? 0);
   const split = () => S.settings.split || { komitmen: 60, invest: 20, reward: 20 };
   const acct = (id) => S.accounts.find((a) => a.id === id);
+  const slipOf = (month) => S.payslips.find((s) => s.month === month);
   const activeSelfItems = () => S.items.filter((i) => i.active && i.paid_by === 'self');
 
   async function startApp() {
@@ -159,7 +161,7 @@
 
   function render() {
     const v = $('#view');
-    ({ ringkasan: renderSummary, rekod: renderRecord, item: renderItems, pinjaman: renderLoans, tetapan: renderSettings })[S.view](v);
+    ({ ringkasan: renderSummary, rekod: renderRecord, item: renderItems, pinjaman: renderLoans, gaji: renderPayslips, tetapan: renderSettings })[S.view](v);
   }
 
   // ================= RINGKASAN =================
@@ -290,7 +292,7 @@
     body.innerHTML = `
       <div class="grid g4">
         <div class="card kpi"><div class="lbl">Hari gaji</div><div class="val">${fmtDate(p.payday)}</div></div>
-        <div class="card kpi"><div class="lbl">Pendapatan</div><div class="val">${amt(p.income)}</div></div>
+        <div class="card kpi"><div class="lbl">Pendapatan</div><div class="val">${amt(p.income)}</div>${slipOf(p.month) ? `<div class="sub">Bersih · kasar ${rm(slipOf(p.month).gross)}</div>` : ''}</div>
         <div class="card kpi"><div class="lbl">Selesai</div><div class="val">${doneCount}/${its.length}</div><div class="sub">${amt(paid)} dibayar</div></div>
         <div class="card kpi"><div class="lbl">Baki / Saving</div><div class="val">${p.leftover === null ? '—' : amt(p.leftover)}</div><div class="sub">${p.closed ? 'Bulan ditutup' : 'Masih terbuka'}</div></div>
       </div>
@@ -395,7 +397,7 @@
     dialog(`<h2>Bulan baru</h2>
       <label>Bulan<input name="month" type="month" value="${m.slice(0, 7)}" required></label>
       <label>Tarikh gaji masuk<input name="payday" type="date" value="${m.slice(0, 8)}25"></label>
-      <label>Pendapatan (RM)<input name="income" type="number" step="0.01" min="0" value="${income()}" required></label>
+      <label>Pendapatan (RM)<input name="income" type="number" step="0.01" min="0" value="${num(slipOf(m)?.net) || income()}" required></label>
       <p class="muted small">Semua item aktif akan dimasukkan sebagai "belum". Item company ditanda "Co".</p>`, async (fd) => {
       const month = fd.get('month') + '-01';
       if (S.periods.some((p) => p.month === month)) throw new Error('Bulan ini dah wujud.');
@@ -542,6 +544,80 @@
     });
   }
 
+  // ================= GAJI =================
+  const SLIP_EARN = [['basic', 'Basic'], ['allowance', 'Elaun'], ['overtime', 'OT'], ['holiday', 'Cuti umum'], ['commission', 'Komisen']];
+  const SLIP_DED = [['epf', 'KWSP'], ['socso', 'PERKESO'], ['eis', 'EIS'], ['skbbk', 'SKBBK'], ['pcb', 'PCB'], ['staff_house', 'Staff house'], ['other_deduction', 'Lain']];
+  const SLIP_ER = [['epf_employer', 'KWSP'], ['socso_employer', 'PERKESO'], ['eis_employer', 'EIS']];
+
+  function renderPayslips(v) {
+    const ps = S.payslips;
+    const last = ps[0];
+    const yr = last ? last.month.slice(0, 4) : '';
+    const ytd = ps.filter((s) => s.month.startsWith(yr));
+    const sum = (rows, k) => round2(rows.reduce((t, s) => t + num(s[k]), 0));
+    const stat = last ? round2(num(last.epf) + num(last.socso) + num(last.eis) + num(last.skbbk) + num(last.pcb)) : 0;
+    v.innerHTML = `<div class="row"><h2 class="grow">Slip gaji</h2><button class="btn primary sm" id="addSlip">＋ Slip</button></div>
+      ${last ? `<div class="grid g4">
+        <div class="card kpi"><div class="lbl">Gaji kasar terkini</div><div class="val">${amt(last.gross)}</div><div class="sub">${monthLabel(last.month)} · basic ${rm(last.basic)}</div></div>
+        <div class="card kpi"><div class="lbl">Gaji bersih terkini</div><div class="val good">${amt(last.net)}</div><div class="sub">Masuk bank · ${Math.round((num(last.net) / num(last.gross)) * 100)}% dari kasar</div></div>
+        <div class="card kpi"><div class="lbl">Potongan bulanan</div><div class="val">${amt(round2(num(last.gross) - num(last.net)))}</div><div class="sub">Statutori ${rm(stat)} · rumah ${rm(last.staff_house)}</div></div>
+        <div class="card kpi"><div class="lbl">KWSP ${yr} (anda + majikan)</div><div class="val">${amt(sum(ytd, 'epf') + sum(ytd, 'epf_employer'))}</div><div class="sub">${rm(sum(ytd, 'epf'))} + ${rm(sum(ytd, 'epf_employer'))}</div></div>
+      </div>
+      <div class="card"><div class="card-h"><h2>Jumlah ${yr} setakat ${monthLabel(last.month)}</h2></div>
+        <div class="grid g3">
+          <div class="kpi"><div class="lbl">Kasar</div><div class="val">${amt(sum(ytd, 'gross'))}</div></div>
+          <div class="kpi"><div class="lbl">Bersih</div><div class="val">${amt(sum(ytd, 'net'))}</div></div>
+          <div class="kpi"><div class="lbl">Purata bersih / bulan</div><div class="val">${amt(ytd.length ? sum(ytd, 'net') / ytd.length : 0)}</div><div class="sub">${ytd.length} bulan</div></div>
+        </div></div>` : ''}
+      <div class="card"><div class="tbl-wrap"><table><thead><tr><th>Bulan</th><th class="r">Kasar</th><th class="r">Bersih</th><th class="r">KWSP</th><th class="r">PERKESO+EIS</th><th class="r">SKBBK</th><th class="r">Rumah</th><th>Jawatan</th><th>Nota</th><th></th></tr></thead><tbody>
+        ${ps.map((s) => `<tr><td>${monthLabel(s.month)}</td><td class="r">${amt(s.gross)}</td><td class="r"><b>${amt(s.net)}</b></td><td class="r">${amt(s.epf)}</td>
+          <td class="r">${amt(round2(num(s.socso) + num(s.eis)))}</td><td class="r">${num(s.skbbk) ? amt(s.skbbk) : '—'}</td><td class="r">${num(s.staff_house) ? amt(s.staff_house) : '—'}</td>
+          <td class="small">${esc(s.position || '')}</td><td class="small muted">${esc(s.note || '')}</td><td class="r"><button class="btn ghost sm" data-edit-slip="${s.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">Belum ada slip.</td></tr>'}
+      </tbody></table></div></div>`;
+    $('#addSlip').onclick = () => slipDialog(null);
+    $$('[data-edit-slip]', v).forEach((b) => (b.onclick = () => slipDialog(S.payslips.find((s) => s.id === b.dataset.editSlip))));
+  }
+
+  function slipDialog(sl) {
+    // slip baru: salin angka tetap dari slip terakhir, OT/cuti/komisen kosong
+    const last = S.payslips[0] || {};
+    const x = sl || { ...Object.fromEntries([...SLIP_EARN, ...SLIP_DED, ...SLIP_ER].map(([k]) => [k, last[k] ?? 0])), overtime: 0, holiday: 0, commission: 0,
+      position: last.position || '', note: '', month: last.month ? (() => { const d = new Date(last.month + 'T00:00:00'); d.setMonth(d.getMonth() + 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; })() : nextMonthIso() };
+    const f = ([k, l]) => `<label>${l}<input name="${k}" type="number" step="0.01" min="0" value="${num(x[k])}"></label>`;
+    dialog(`<h2>${sl ? 'Edit slip ' + monthLabel(sl.month) : 'Slip gaji baru'}</h2>
+      <div class="grid g2"><label>Bulan<input name="month" type="month" value="${x.month.slice(0, 7)}" required ${sl ? 'disabled' : ''}></label><label>Jawatan<input name="position" value="${esc(x.position || '')}"></label></div>
+      <h3>Pendapatan</h3><div class="grid g3">${SLIP_EARN.map(f).join('')}</div>
+      <h3>Potongan</h3><div class="grid g3">${SLIP_DED.map(f).join('')}</div>
+      <h3>Caruman majikan</h3><div class="grid g3">${SLIP_ER.map(f).join('')}</div>
+      <label>Nota<input name="note" value="${esc(x.note || '')}" maxlength="200"></label>
+      <p class="muted small" id="slipCalc"></p>
+      ${sl ? '<button type="button" class="btn ghost danger sm" id="delSlip">Padam slip ini</button>' : ''}`, async (fd) => {
+      const row = Object.fromEntries([...SLIP_EARN, ...SLIP_DED, ...SLIP_ER].map(([k]) => [k, num(fd.get(k))]));
+      row.gross = round2(SLIP_EARN.reduce((t, [k]) => t + row[k], 0));
+      row.net = round2(row.gross - SLIP_DED.reduce((t, [k]) => t + row[k], 0));
+      Object.assign(row, { position: fd.get('position') || null, note: fd.get('note') || null });
+      const month = sl ? sl.month : fd.get('month') + '-01';
+      if (sl) await q(sb.from('payslips').update(row).eq('id', sl.id));
+      else { if (slipOf(month)) throw new Error('Slip bulan ini dah wujud.'); await q(sb.from('payslips').insert({ ...row, month })); }
+      // pendapatan bulan tu = gaji bersih slip; slip terkini = pendapatan bulanan dalam tetapan
+      const p = S.periods.find((pp) => pp.month === month);
+      if (p && num(p.income) !== row.net) await q(sb.from('periods').update({ income: row.net }).eq('id', p.id));
+      if (month >= (S.payslips[0]?.month || '')) await q(sb.from('settings').upsert({ key: 'income', value: row.net }));
+      await reload(); toast('Slip disimpan · bersih ' + rm(row.net));
+    });
+    const form = $('#dlgForm');
+    const calc = () => {
+      const g = SLIP_EARN.reduce((t, [k]) => t + num(form.elements[k].value), 0);
+      const d = SLIP_DED.reduce((t, [k]) => t + num(form.elements[k].value), 0);
+      $('#slipCalc').innerHTML = `Kasar <b>${rm(g)}</b> − potongan ${rm(d)} = bersih <b>${rm(g - d)}</b>. Pastikan sama dengan NETT INCOME pada slip.`;
+    };
+    form.addEventListener('input', calc); calc();
+    if (sl) $('#delSlip').onclick = async () => {
+      if (!confirm(`Padam slip ${monthLabel(sl.month)}?`)) return;
+      await q(sb.from('payslips').delete().eq('id', sl.id)); $('#dlg').close(); await reload();
+    };
+  }
+
   // ================= TETAPAN =================
   function renderSettings(v) {
     const sp = split();
@@ -603,8 +679,8 @@
   }
   const stamp = () => new Date().toISOString().slice(0, 10);
   function exportJson() {
-    const { settings, accounts, items, periods, entries, transfers, loans, payments } = S;
-    download(`zak-financial-backup-${stamp()}.json`, JSON.stringify({ exported_at: new Date().toISOString(), settings, accounts, items, periods, entries, transfers, loans, loan_payments: payments }, null, 2), 'application/json');
+    const { settings, accounts, items, periods, entries, transfers, loans, payments, payslips } = S;
+    download(`zak-financial-backup-${stamp()}.json`, JSON.stringify({ exported_at: new Date().toISOString(), settings, accounts, items, periods, entries, transfers, loans, loan_payments: payments, payslips }, null, 2), 'application/json');
   }
   function exportCsv() {
     const cell = (s) => { const t = String(s ?? ''); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
