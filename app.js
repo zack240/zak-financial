@@ -478,6 +478,7 @@
   function dialog(html, onSubmit) {
     const d = $('#dlg'), f = $('#dlgForm');
     f.innerHTML = html + `<p class="err" id="dlgErr"></p><div class="dlg-actions"><button class="btn ghost" type="button" id="dlgCancel">Batal</button><button class="btn primary" type="submit">Simpan</button></div>`;
+    f.oninput = null; // borang dikongsi semua dialog; buang pendengar dialog sebelum ni
     f.onsubmit = async (e) => {
       e.preventDefault();
       try { const ok = await onSubmit(new FormData(f)); if (ok !== false) d.close(); }
@@ -749,7 +750,7 @@
       const d = SLIP_DED.reduce((t, [k]) => t + num(form.elements[k].value), 0);
       $('#slipCalc').innerHTML = `Kasar <b>${rm(g)}</b> − potongan ${rm(d)} = bersih <b>${rm(g - d)}</b>. Pastikan sama dengan NETT INCOME pada slip.`;
     };
-    form.addEventListener('input', calc); calc();
+    form.oninput = calc; calc();
     if (sl) $('#delSlip').onclick = async () => {
       if (!confirm(`Padam slip ${monthLabel(sl.month)}?`)) return;
       await q(sb.from('payslips').delete().eq('id', sl.id)); $('#dlg').close(); await reload();
@@ -894,8 +895,9 @@
           </div></div>
       </div>
       <div class="card"><div class="card-h"><h2>Akaun bank / e-wallet</h2><button class="btn sm" id="addAcct">＋ Akaun</button></div>
-        <div class="tbl-wrap"><table><thead><tr><th>Kod</th><th>Nama</th><th>Peranan</th><th class="r">Had simpanan</th><th></th></tr></thead><tbody>
-          ${S.accounts.map((a) => `<tr class="${a.active ? '' : 'inactive'}"><td><span class="dot" style="--acct:${esc(a.color)}"></span><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td><td>${esc(a.role || '')}</td>
+        <div class="tbl-wrap"><table><thead><tr><th>Kod</th><th>Nama</th><th>No. Acc</th><th>Peranan</th><th class="r">Had simpanan</th><th></th></tr></thead><tbody>
+          ${S.accounts.map((a) => `<tr class="${a.active ? '' : 'inactive'}"><td><span class="dot" style="--acct:${esc(a.color)}"></span><b>${esc(a.code)}</b></td><td>${esc(a.name)}</td>
+            <td>${a.account_no ? `<span class="amt acc-no">${esc(maskAcc(a.account_no))}</span> <button class="btn ghost sm" data-copy-acct="${a.id}" title="Salin nombor penuh">Salin</button>` : '<span class="muted">—</span>'}</td><td>${esc(a.role || '')}</td>
             <td class="r">${a.balance_cap ? amt(a.balance_cap) : '—'}</td><td class="r"><button class="btn ghost sm" data-edit-acct="${a.id}">Edit</button></td></tr>`).join('')}
         </tbody></table></div></div>
       <div id="auditBox"></div>`;
@@ -908,21 +910,30 @@
     };
     $('#addAcct').onclick = () => acctDialog(null);
     $$('[data-edit-acct]', v).forEach((b) => (b.onclick = () => acctDialog(S.accounts.find((a) => a.id === b.dataset.editAcct))));
+    $$('[data-copy-acct]', v).forEach((b) => (b.onclick = async () => {
+      const a = S.accounts.find((x) => x.id === b.dataset.copyAcct);
+      try { await navigator.clipboard.writeText(a.account_no.replace(/[\s-]/g, '')); toast(`No. akaun ${a.code} disalin.`); }
+      catch (_) { toast('Tak dapat salin. Buka Edit untuk lihat nombor penuh.', true); }
+    }));
     $('#expJson').onclick = exportJson;
     $('#expCsv').onclick = exportCsv;
     $('#showAudit').onclick = showAudit;
   }
+
+  // tunjuk 4 digit terakhir sahaja (elak terdedah bila skrin dikongsi)
+  const maskAcc = (n) => { const d = String(n).replace(/\D/g, ''); return d.length > 4 ? '•••• ' + d.slice(-4) : d; };
 
   function acctDialog(a) {
     const x = a || { code: '', name: '', role: '', color: '#888888', balance_cap: '', cap_note: '', sort: S.accounts.length + 1, active: true };
     dialog(`<h2>${a ? 'Edit akaun' : 'Akaun baru'}</h2>
       <div class="grid g2"><label>Kod<input name="code" value="${esc(x.code)}" required maxlength="10"></label><label>Warna<input name="color" type="color" value="${esc(x.color)}"></label></div>
       <label>Nama<input name="name" value="${esc(x.name)}" required></label>
+      <label>No. akaun<input name="account_no" value="${esc(x.account_no || '')}" inputmode="numeric" autocomplete="off" maxlength="40" pattern="[0-9 \\-]*" title="Nombor, ruang atau sengkang sahaja" placeholder="cth 1234 5678 9012"></label>
       <label>Peranan<input name="role" value="${esc(x.role || '')}" placeholder="cth Daily, Masuk Gaji"></label>
       <div class="grid g2"><label>Had simpanan (RM)<input name="balance_cap" type="number" step="0.01" value="${x.balance_cap ?? ''}"></label><label>Susunan<input name="sort" type="number" value="${x.sort}"></label></div>
       <label>Nota had<input name="cap_note" value="${esc(x.cap_note || '')}"></label>
       <label class="check"><input type="checkbox" name="active" ${x.active ? 'checked' : ''}> Aktif</label>`, async (fd) => {
-      const row = { code: fd.get('code').trim().toUpperCase(), name: fd.get('name'), role: fd.get('role') || null, color: fd.get('color'), balance_cap: nOrNull(fd.get('balance_cap')),
+      const row = { code: fd.get('code').trim().toUpperCase(), name: fd.get('name'), account_no: fd.get('account_no').trim() || null, role: fd.get('role') || null, color: fd.get('color'), balance_cap: nOrNull(fd.get('balance_cap')),
         cap_note: fd.get('cap_note') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on' };
       if (a) await q(sb.from('accounts').update(row).eq('id', a.id)); else await q(sb.from('accounts').insert(row));
       await reload();
