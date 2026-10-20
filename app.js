@@ -616,6 +616,8 @@
         <label class="check"><input type="checkbox" name="active" ${i.active ? 'checked' : ''}> Aktif</label></div>`, async (fd) => {
       const row = { name: fd.get('name').trim(), amount: Number(fd.get('amount')), bucket: fd.get('bucket'), kind: fd.get('bucket') === 'invest' ? (fd.get('kind') || null) : null, account_id: fd.get('account_id') || null,
         paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on' };
+      // rekod lama tanpa amaun khusus ikut amaun semasa item; kunci dulu supaya sejarah tak berubah
+      if (it && num(it.amount) !== row.amount) await q(sb.from('entries').update({ amount: num(it.amount) }).eq('item_id', it.id).is('amount', null));
       if (it) await q(sb.from('items').update(row).eq('id', it.id)); else await q(sb.from('items').insert(row));
       await reload(); toast('Item disimpan.');
     });
