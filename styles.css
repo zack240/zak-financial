@@ -166,6 +166,13 @@ tr.inactive td { opacity: .45; }
 .citem { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .citem .nm { font-weight: 600; }
 .citem .meta { font-size: 13px; color: var(--muted); }
+/* nota item: tersorok, klik untuk baca */
+details.note { margin-top: 2px; font-size: 12px; color: var(--muted); }
+details.note summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 4px; user-select: none; }
+details.note summary::-webkit-details-marker { display: none; }
+details.note summary::before { content: '▸'; font-size: 10px; transition: transform .15s; }
+details.note[open] summary::before { transform: rotate(90deg); }
+details.note > div { white-space: normal; max-width: 34ch; margin-top: 4px; line-height: 1.4; }
 /* tapisan item (pill) */
 .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .pills.sub { margin-top: -4px; }
