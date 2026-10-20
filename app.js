@@ -300,9 +300,10 @@
       <div class="card">
         <div class="card-h"><h2>${monthLabel(p.month)}</h2><button class="btn sm" id="editPeriod">Edit bulan</button></div>
         ${p.notes ? `<p class="muted small">${esc(p.notes)}</p>` : ''}
+      </div>
         ${groups.map(({ a, list }) => `
-          <div class="check-group">
-            <h3><span><span class="dot" style="--acct:${esc(a?.color || '#999')}"></span>${esc(a ? `${a.code} · ${a.role || ''}` : 'Tiada akaun')}</span>
+          <div class="card seg" style="--acct:${esc(a?.color || '#999999')}">
+            <h3><span><span class="dot"></span>${esc(a ? `${a.code} · ${a.role || ''}` : 'Tiada akaun')}</span>
               <span class="muted small">${amt(list.filter((i) => i.paid_by === 'self').reduce((s, i) => s + num(i.amount), 0))}</span></h3>
             ${list.map((i) => {
               const e = entOf(i.id); const st = e?.status || 'pending';
@@ -316,7 +317,6 @@
               </div>`;
             }).join('')}
           </div>`).join('')}
-      </div>
       <div class="card">
         <div class="card-h"><h2>Pindahan gabung</h2><button class="btn sm" id="addTransfer">＋ Tambah</button></div>
         ${trs.length ? `<div class="tbl-wrap"><table><thead><tr><th>Akaun</th><th>Untuk</th><th class="r">Amaun</th><th></th></tr></thead><tbody>

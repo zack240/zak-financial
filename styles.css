@@ -144,6 +144,11 @@ tr.inactive td { opacity: .45; }
 .sym-company, .sym-other { color: var(--muted); font-size: 12px; }
 
 /* checklist */
+#recBody { display: flex; flex-direction: column; gap: 14px; }
+/* Rekod: satu segmen (kad) per akaun bank, diwarna pudar ikut warna akaun */
+.seg { background: color-mix(in srgb, var(--acct) 9%, var(--surface)); border-color: color-mix(in srgb, var(--acct) 40%, var(--line)); border-left: 5px solid var(--acct); }
+.seg h3 { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.seg .citem { border-top-color: color-mix(in srgb, var(--acct) 22%, var(--line)); }
 .check-group h3 { display: flex; align-items: center; justify-content: space-between; padding: 10px 0 6px; }
 .citem { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .citem .nm { font-weight: 600; }
