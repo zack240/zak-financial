@@ -228,8 +228,8 @@
             </div>`;
           }).join('')}
           ${diff > 0 ? `<div class="bucket">
-              <div class="row"><b class="grow">Belum diagih <span class="muted small">${inc ? round2(diff / inc * 100) : 0}%</span></b><span class="warn">${amt(diff)}</span></div>
-              <div class="small muted">Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.</div>
+              <div class="row"><b class="grow">Belum diagih <span class="muted small">${inc ? round2(diff / inc * 100) : 0}%</span></b><span class="${diff < 20 ? 'good' : 'warn'}">${amt(diff)}</span></div>
+              <div class="small ${diff < 20 ? 'good' : 'muted'}">${diff < 20 ? 'Seimbang, hampir setiap ringgit dah ada tugas.' : 'Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.'}</div>
             </div>` : ''}
         </div>
         <div class="card">
