@@ -138,6 +138,7 @@
     periods.sort((a, b) => b.month.localeCompare(a.month));
     payslips.sort((a, b) => b.month.localeCompare(a.month));
     accounts.sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code));
+    items.sort(itemOrder);
     S.settings = Object.fromEntries(settings.map((r) => [r.key, r.value]));
     Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips });
     if (!S.periodId || !periods.find((p) => p.id === S.periodId)) S.periodId = periods[0]?.id || null;
@@ -560,7 +561,7 @@
     const tot = (list) => round2(list.filter((i) => i.active && i.paid_by === 'self').reduce((s, i) => s + num(i.amount), 0));
     const inB = (k) => S.items.filter((i) => k === 'all' || i.bucket === k);
     const inK = (list) => list.filter((i) => fk === 'all' || i.kind === fk || (fk === 'none' && !KINDS[i.kind]));
-    const rows = (f === 'invest' ? inK(inB('invest')) : inB(f)).sort((a, b) => (b.active - a.active) || a.sort - b.sort);
+    const rows = (f === 'invest' ? inK(inB('invest')) : inB(f)).sort(itemOrder);
     const pill = (attr, k, label, list, on) => `<button class="pill ${on ? 'on' : ''}" ${attr}="${k}">${label} <span class="small">${list.filter((i) => i.active).length} · ${rm(tot(list))}</span></button>`;
     const inv = inB('invest');
     v.innerHTML = `<div class="card">
@@ -569,10 +570,11 @@
       ${f === 'invest' ? `<div class="pills sub">${pill('data-k', 'all', 'Semua jenis', inv, fk === 'all')}${Object.entries(KINDS).map(([k, l]) => pill('data-k', k, l, inv.filter((i) => i.kind === k), fk === k)).join('')}
         ${inv.some((i) => !KINDS[i.kind]) ? pill('data-k', 'none', 'Belum ditanda', inv.filter((i) => !KINDS[i.kind]), fk === 'none') : ''}</div>` : ''}
       <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Kategori</th><th>Akaun</th><th class="r">Amaun</th><th>Bayar oleh</th><th>Rujukan</th><th></th></tr></thead><tbody>
-        ${rows.map((i) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}${i.bucket === 'invest' && i.kind ? `<div class="muted small">${KINDS[i.kind]}</div>` : ''}</td>
+        ${rows.map((i, idx) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}${i.bucket === 'invest' && i.kind ? `<div class="muted small">${KINDS[i.kind]}</div>` : ''}</td>
           <td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(acct(i.account_id)?.code || '—')}</td>
           <td class="r">${amt(i.amount)}</td><td>${i.paid_by === 'company' ? 'Company' : 'Sendiri'}</td><td class="small"><span class="amt">${esc(i.ref_no || '')}</span></td>
-          <td class="r"><button class="btn ghost sm" data-edit="${i.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Tiada item.</td></tr>'}
+          <td class="r"><button class="btn ghost sm" data-move-item="${i.id}" data-dir="-1" title="Naik" aria-label="Naik ${esc(i.name)}" ${idx === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-move-item="${i.id}" data-dir="1" title="Turun" aria-label="Turun ${esc(i.name)}" ${idx === rows.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="btn ghost sm" data-edit="${i.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Tiada item.</td></tr>'}
       </tbody></table></div></div>`;
     $$('[data-f]', v).forEach((b) => (b.onclick = () => { S.itemFilter = b.dataset.f; S.itemKind = 'all'; renderItems(v); }));
     $$('[data-k]', v).forEach((b) => (b.onclick = () => { S.itemKind = b.dataset.k; renderItems(v); }));
@@ -581,6 +583,22 @@
     // item baru ikut tapisan semasa
     $('#addItem').onclick = () => itemDialog(null, f !== 'all' ? { bucket: f, kind: f === 'invest' && KINDS[fk] ? fk : null } : undefined);
     $$('[data-edit]', v).forEach((b) => (b.onclick = () => itemDialog(S.items.find((i) => i.id === b.dataset.edit))));
+    $$('[data-move-item]', v).forEach((b) => (b.onclick = () => moveItem(b.dataset.moveItem, Number(b.dataset.dir), rows)));
+  }
+
+  // susunan item: aktif dulu, kemudian sort, nama (susunan sama tetap stabil)
+  const itemOrder = (a, b) => (b.active - a.active) || a.sort - b.sort || a.name.localeCompare(b.name);
+
+  // tukar dengan jiran yg NAMPAK dalam tapisan semasa, kemudian nomborkan semula semua item 1..n
+  async function moveItem(id, dir, visible) {
+    const i = visible.findIndex((x) => x.id === id), other = visible[i + dir];
+    if (i < 0 || !other) return;
+    const all = S.items.slice().sort(itemOrder);
+    const a = all.findIndex((x) => x.id === id), b = all.findIndex((x) => x.id === other.id);
+    [all[a], all[b]] = [all[b], all[a]];
+    const changed = all.map((x, k) => ({ x, sort: k + 1 })).filter(({ x, sort }) => x.sort !== sort);
+    await Promise.all(changed.map(({ x, sort }) => q(sb.from('items').update({ sort }).eq('id', x.id))));
+    await reload();
   }
 
   function itemDialog(it, prefill) {
