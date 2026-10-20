@@ -27,6 +27,7 @@
   const shortMonth = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`; };
   const fmtDate = (iso) => { if (!iso) return '—'; const d = new Date(iso + 'T00:00:00'); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
   const round2 = (n) => Math.round(n * 100) / 100;
+  const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
   const monthsBetween = (a, b) => { const x = new Date(a + 'T00:00:00'), y = new Date(b + 'T00:00:00'); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth(); };
 
   const S = {
@@ -302,9 +303,19 @@
     for (const l of jpa) recs.push({ tone: 'warn', title: `${esc(l.name)}: bayaran belum diketahui`,
       body: `Bila bayaran ${esc(l.name)} bermula, komitmen akan naik melebihi ${K.pct}%. Kalau ada "belum diagih", jangan biasakan diri belanja duit tu. Ia akan diperlukan untuk ansuran ini.` });
 
-    const phone = items.filter((i) => i.bucket === 'komitmen' && PHONE_RE.test(i.name) && num(i.amount) > 100);
+    const phone = items.filter((i) => i.bucket === 'komitmen' && PHONE_RE.test(i.name) && num(i.amount) > 100 && !i.end_date);
     for (const p of phone) recs.push({ tone: 'warn', title: `${esc(p.name)} ${rm(p.amount)} (${pctOf(p.amount)}% gaji)`,
       body: `Plan telefon biasa RM40–100. Kalau ${rm(p.amount)} termasuk ansuran fon, catat tarikh tamat dalam nota item. Kalau tak, turun plan boleh jimat ~${rm(num(p.amount) - 100)}/bulan = ${rm((num(p.amount) - 100) * 12)} setahun.` });
+
+    // item bertempoh: amaran bila hampir/dah tamat, ringkasan baki komitmen
+    const termed = items.filter((i) => i.end_date).sort((a, b) => a.end_date.localeCompare(b.end_date));
+    for (const t of termed) {
+      const left = monthsLeft(t.end_date);
+      if (left < 0) recs.push({ tone: 'bad', title: `${esc(t.name)} dah tamat ${fmtDate(t.end_date)}`, body: 'Kemas kini amaun (cth plan tanpa ansuran) atau nyahaktif item ini.' });
+      else if (left <= 3) recs.push({ tone: 'warn', title: `${esc(t.name)} tamat ${fmtDate(t.end_date)} (${left} bulan lagi)`, body: `Bersedia: semak plan baharu yang lebih murah, jangan auto-sambung kontrak. ${rm(t.amount)}/bulan boleh dialih ke simpanan.` });
+    }
+    if (termed.length) recs.push({ tone: 'muted', title: `Komitmen bertempoh: ${rm(round2(termed.reduce((s, t) => s + num(t.amount) * Math.max(0, monthsLeft(t.end_date)), 0)))} lagi`,
+      body: termed.map((t) => `${esc(t.name)} ${rm(t.amount)} × ${Math.max(0, monthsLeft(t.end_date))} bulan (tamat ${fmtDate(t.end_date)})`).join('<br>') + '<br>Bila tamat, alihkan amaun tu ke simpanan, jangan biar ia jadi belanja.' });
 
     const subs = items.filter((i) => SUBS_RE.test(i.name));
     const subsTot = round2(subs.reduce((s, i) => s + num(i.amount), 0));
@@ -454,7 +465,7 @@
     const ps = S.periods.slice(); // terbaru di kiri
     // lajur draf: bulan seterusnya yg belum dibuka, item aktif ditunjuk sebagai belum
     const dHead = dr ? `<th class="draft">${shortMonth(dr.month)}<br><span class="small">~${new Date(dr.payday + 'T00:00:00').getDate()}/${new Date(dr.payday + 'T00:00:00').getMonth() + 1}</span><br><button class="btn primary sm" data-open-draft>＋ Buka</button></th>` : '';
-    const dCell = (i) => (dr ? `<td class="draft">${i.active ? (i.paid_by === 'company' ? '<span class="sym-company">Co</span>' : '<span class="draft-dot" title="Belum">○</span>') : ''}</td>` : '');
+    const dCell = (i) => (dr ? `<td class="draft">${i.active && !(i.end_date && i.end_date < dr.month) ? (i.paid_by === 'company' ? '<span class="sym-company">Co</span>' : '<span class="draft-dot" title="Belum">○</span>') : ''}</td>` : '');
     const its = S.items.filter((i) => i.active || S.entries.some((e) => e.item_id === i.id));
     const sym = (e) => {
       if (!e) return '';
@@ -513,7 +524,7 @@
       const month = fd.get('month') + '-01';
       if (S.periods.some((p) => p.month === month)) throw new Error('Bulan ini dah wujud.');
       const p = await q(sb.from('periods').insert({ month, payday: fd.get('payday') || null, income: Number(fd.get('income')) }).select().single());
-      const rows = S.items.filter((i) => i.active).map((i) => ({ period_id: p.id, item_id: i.id, status: i.paid_by === 'company' ? 'company' : 'pending' }));
+      const rows = S.items.filter((i) => i.active && !(i.end_date && i.end_date < month)).map((i) => ({ period_id: p.id, item_id: i.id, status: i.paid_by === 'company' ? 'company' : 'pending' }));
       if (rows.length) await q(sb.from('entries').insert(rows));
       S.periodId = p.id; await reload(); toast('Bulan ' + monthLabel(month) + ' dibuka.');
     });
@@ -570,7 +581,7 @@
       ${f === 'invest' ? `<div class="pills sub">${pill('data-k', 'all', 'Semua jenis', inv, fk === 'all')}${Object.entries(KINDS).map(([k, l]) => pill('data-k', k, l, inv.filter((i) => i.kind === k), fk === k)).join('')}
         ${inv.some((i) => !KINDS[i.kind]) ? pill('data-k', 'none', 'Belum ditanda', inv.filter((i) => !KINDS[i.kind]), fk === 'none') : ''}</div>` : ''}
       <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Kategori</th><th>Akaun</th><th class="r">Amaun</th><th>Bayar oleh</th><th>Rujukan</th><th></th></tr></thead><tbody>
-        ${rows.map((i, idx) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}${i.bucket === 'invest' && i.kind ? `<div class="muted small">${KINDS[i.kind]}</div>` : ''}</td>
+        ${rows.map((i, idx) => `<tr class="${i.active ? '' : 'inactive'}"><td><b>${esc(i.name)}</b>${i.end_date ? endBadge(i) : ''}${i.notes ? `<div class="muted small">${esc(i.notes)}</div>` : ''}</td><td>${BUCKETS[i.bucket]}${i.bucket === 'invest' && i.kind ? `<div class="muted small">${KINDS[i.kind]}</div>` : ''}</td>
           <td><span class="dot" style="--acct:${esc(acct(i.account_id)?.color || '#999')}"></span>${esc(acct(i.account_id)?.code || '—')}</td>
           <td class="r">${amt(i.amount)}</td><td>${i.paid_by === 'company' ? 'Company' : 'Sendiri'}</td><td class="small"><span class="amt">${esc(i.ref_no || '')}</span></td>
           <td class="r"><button class="btn ghost sm" data-move-item="${i.id}" data-dir="-1" title="Naik" aria-label="Naik ${esc(i.name)}" ${idx === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-move-item="${i.id}" data-dir="1" title="Turun" aria-label="Turun ${esc(i.name)}" ${idx === rows.length - 1 ? 'disabled' : ''}>↓</button>
@@ -601,6 +612,10 @@
     await reload();
   }
 
+  // bulan bil yg tinggal hingga tarikh tamat (negatif = dah tamat)
+  const monthsLeft = (end) => (end < todayIso() ? -1 : monthsBetween(todayIso(), end));
+  const endBadge = (i) => { const l = monthsLeft(i.end_date); return `<div class="small ${l < 0 ? 'bad' : l <= 3 ? 'warn' : 'muted'}">Tamat ${fmtDate(i.end_date)} · ${l < 0 ? 'dah tamat' : l + ' bulan lagi'}</div>`; };
+
   function itemDialog(it, prefill) {
     const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true, ...prefill };
     dialog(`<h2>${it ? 'Edit item' : 'Item baru'}</h2>
@@ -612,10 +627,11 @@
         <label>Bayar oleh<select name="paid_by"><option value="self" ${i.paid_by === 'self' ? 'selected' : ''}>Sendiri</option><option value="company" ${i.paid_by === 'company' ? 'selected' : ''}>Company</option></select></label></div>
       <label>No. rujukan / akaun<input name="ref_no" value="${esc(i.ref_no || '')}" maxlength="60"></label>
       <label>Nota<input name="notes" value="${esc(i.notes || '')}" maxlength="200"></label>
+      <label>Tarikh tamat (pilihan)<input name="end_date" type="date" value="${i.end_date || ''}"><span class="muted small">Untuk kontrak / ansuran: kira bulan tinggal & peringatan</span></label>
       <div class="grid g2"><label>Susunan<input name="sort" type="number" value="${i.sort}"></label>
         <label class="check"><input type="checkbox" name="active" ${i.active ? 'checked' : ''}> Aktif</label></div>`, async (fd) => {
       const row = { name: fd.get('name').trim(), amount: Number(fd.get('amount')), bucket: fd.get('bucket'), kind: fd.get('bucket') === 'invest' ? (fd.get('kind') || null) : null, account_id: fd.get('account_id') || null,
-        paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on' };
+        paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, end_date: fd.get('end_date') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on' };
       // rekod lama tanpa amaun khusus ikut amaun semasa item; kunci dulu supaya sejarah tak berubah
       if (it && num(it.amount) !== row.amount) await q(sb.from('entries').update({ amount: num(it.amount) }).eq('item_id', it.id).is('amount', null));
       if (it) await q(sb.from('items').update(row).eq('id', it.id)); else await q(sb.from('items').insert(row));
