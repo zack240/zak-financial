@@ -31,7 +31,7 @@
   const monthsBetween = (a, b) => { const x = new Date(a + 'T00:00:00'), y = new Date(b + 'T00:00:00'); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth(); };
 
   const S = {
-    settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [],
+    settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [],
     view: 'ringkasan', periodId: null, matrix: true, // Rekod buka dalam Jadual penuh
   };
 
@@ -104,7 +104,7 @@
   $('#logoutBtn').addEventListener('click', logout);
   async function logout() {
     await sb.auth.signOut();
-    Object.assign(S, { settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [] });
+    Object.assign(S, { settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [] });
     $('#view').innerHTML = '';
     showLogin();
   }
@@ -125,7 +125,7 @@
 
   // ================= DATA =================
   async function loadAll() {
-    const [settings, accounts, items, periods, entries, transfers, loans, payments, payslips] = await Promise.all([
+    const [settings, accounts, items, periods, entries, transfers, loans, payments, payslips, goals] = await Promise.all([
       q(sb.from('settings').select('*')),
       q(sb.from('accounts').select('*').order('sort')),
       q(sb.from('items').select('*').order('sort')),
@@ -135,13 +135,15 @@
       q(sb.from('loans').select('*').order('created_at')),
       q(sb.from('loan_payments').select('*').order('paid_on', { ascending: false })),
       q(sb.from('payslips').select('*').order('month', { ascending: false })),
+      q(sb.from('goals').select('*').order('sort')),
     ]);
     periods.sort((a, b) => b.month.localeCompare(a.month));
     payslips.sort((a, b) => b.month.localeCompare(a.month));
     accounts.sort((a, b) => a.sort - b.sort || a.code.localeCompare(b.code));
     items.sort(itemOrder);
     S.settings = Object.fromEntries(settings.map((r) => [r.key, r.value]));
-    Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips });
+    goals.sort((a, b) => a.sort - b.sort);
+    Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips, goals });
     if (!S.periodId || !periods.find((p) => p.id === S.periodId)) S.periodId = periods[0]?.id || null;
   }
 
@@ -166,7 +168,7 @@
 
   function render() {
     const v = $('#view');
-    ({ ringkasan: renderSummary, rekod: renderRecord, item: renderItems, pinjaman: renderLoans, gaji: renderPayslips, tetapan: renderSettings })[S.view](v);
+    ({ ringkasan: renderSummary, rekod: renderRecord, matlamat: renderGoals, item: renderItems, pinjaman: renderLoans, gaji: renderPayslips, tetapan: renderSettings })[S.view](v);
   }
 
   // ================= RINGKASAN =================
@@ -326,6 +328,9 @@
       body: `Bagus. Had ${R.pct}% ialah siling, bukan sasaran. Baki ruang ${rm(round2(R.target - R.actual))} lebih berguna jadi simpanan.` });
     if (I.actual >= I.target) recs.push({ tone: 'good', title: `Simpanan & invest ${I.real}% (sasaran ${I.pct}%)`,
       body: `Atas sasaran. ${kindSplit(items).map(([l, n]) => `${l} ${rm(n)} (${pctOf(n)}%)`).join(', ')}. Matlamat belanja perlu ada sasaran amaun dan tarikh. Hanya pelaburan yang membina kekayaan jangka panjang.` });
+    const lateGoals = S.goals.map(goalCalc).filter((c) => c.g.phase === nowPhase() && (c.tone === 'warn' || c.tone === 'bad'));
+    if (lateGoals.length) recs.push({ tone: 'warn', title: `${lateGoals.length} matlamat ${PHASES[nowPhase()][0]} lewat`,
+      body: lateGoals.map((c) => `${esc(c.g.name)}: ${c.need != null ? `perlu ${rm(c.need)}/bulan, sekarang ${rm(c.monthly)}` : esc(c.status)}`).join('<br>') + '<br>Lihat tab Matlamat.' });
     if (K.bad) recs.push({ tone: K.tone, title: `Komitmen ${K.real}% (sasaran ${K.pct}%)`,
       body: `Item terbesar: ${items.filter((i) => i.bucket === 'komitmen').sort((a, b) => num(b.amount) - num(a.amount)).slice(0, 3).map((i) => `${esc(i.name)} ${pctOf(i.amount)}%`).join(', ')}.${companyNeeds ? ` Rumah ${rm(companyNeeds)} dipotong dari gaji, jadi keperluan sebenar ${pctOf(needs)}% dari gaji bersih.` : ''}` });
 
@@ -566,6 +571,178 @@
     });
   }
 
+  // ================= MATLAMAT =================
+  const PHASES = { 1: ['Fasa 1', 'Bina asas', null, 30], 2: ['Fasa 2', 'Keluarga & aset', 30, 40], 3: ['Fasa 3', 'Kembang & lindungi', 40, 50], 4: ['Fasa 4', 'Sedia bersara', 50, 60] };
+  const GOAL_KINDS = { simpanan: 'Simpanan', hutang: 'Langsai hutang', kwsp: 'KWSP', pencapaian: 'Pencapaian' };
+  // Simpanan Asas KWSP ikut umur (anggaran, rangka Belanjawanku / RIA)
+  const KWSP_BENCH = [[30, 38000], [40, 107000], [50, 217000], [60, 390000]];
+  const KWSP_DIV = 0.05; // anggaran dividen konservatif (sejarah ~5-6%)
+  // nilai masa depan: baki + caruman bulanan, dividen dikompaun bulanan
+  const kwspFv = (saved, monthly, m) => { const r = KWSP_DIV / 12, f = (1 + r) ** m; return round2(saved * f + monthly * (f - 1) / r); };
+
+  const birth = () => S.settings.birthdate || null;
+  const ageAt = (iso) => { const b = birth(); if (!b || !iso) return null; const x = new Date(b + 'T00:00:00'), y = new Date(iso + 'T00:00:00'); return y.getFullYear() - x.getFullYear() - (y < new Date(y.getFullYear(), x.getMonth(), x.getDate()) ? 1 : 0); };
+  const birthdayAt = (age) => { const b = birth(); return b ? `${Number(b.slice(0, 4)) + age}${b.slice(4)}` : null; };
+  const nowPhase = () => { const a = ageAt(todayIso()); return a == null ? 1 : a < 30 ? 1 : a < 40 ? 2 : a < 50 ? 3 : 4; };
+  const addMonths = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(1); d.setMonth(d.getMonth() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; };
+
+  // baki pinjaman = baki penyata terakhir − bayaran selepas penyata tu (anggaran, tanpa ujrah baru)
+  function loanBal(l) {
+    const pays = S.payments.filter((p) => p.loan_id === l.id);
+    const bi = pays.findIndex((p) => p.balance_after != null);
+    const paid = pays.reduce((s, p) => s + num(p.amount), 0);
+    const bal = bi >= 0 ? num(pays[bi].balance_after) - pays.slice(0, bi).reduce((s, p) => s + num(p.amount), 0)
+      : (l.original_amount != null ? num(l.original_amount) - paid : null);
+    return { pays, bi, paid, bal };
+  }
+
+  // kemajuan satu matlamat: { saved, target, monthly, need, eta, tone, status }
+  function goalCalc(g) {
+    const after = (m) => !g.balance_as_of || m > g.balance_as_of;
+    let saved = num(g.opening_balance), target = g.target_amount == null ? null : num(g.target_amount), monthly = 0, date = g.target_date, src = '';
+    if (g.kind === 'simpanan') {
+      const it = S.items.find((i) => i.id === g.item_id);
+      if (it) {
+        monthly = it.active ? num(it.amount) : 0; src = it.name;
+        for (const e of S.entries) {
+          if (e.item_id !== it.id || e.status !== 'done') continue;
+          const p = S.periods.find((x) => x.id === e.period_id);
+          if (p && after(p.month)) saved += e.amount != null ? num(e.amount) : num(it.amount);
+        }
+      }
+    } else if (g.kind === 'kwsp') {
+      for (const s of S.payslips) if (after(s.month)) saved += num(s.epf) + num(s.epf_employer);
+      monthly = S.payslips[0] ? num(S.payslips[0].epf) + num(S.payslips[0].epf_employer) : 0; src = 'slip gaji';
+    } else if (g.kind === 'hutang') {
+      const l = S.loans.find((x) => x.id === g.loan_id);
+      if (!l || l.original_amount == null) return { g, tone: 'muted', status: 'Maklumat belum ada', info: l ? `Isi jumlah & bayaran bulanan ${esc(l.name)} dalam tab Pinjaman.` : 'Pinjaman belum dipautkan.' };
+      const { bal } = loanBal(l);
+      target = num(l.original_amount); monthly = num(l.monthly); date = date || l.end_date;
+      if (bal <= 0) return { g, saved: target, target, date, tone: 'good', status: 'Langsai', pct: 100 };
+      saved = round2(target - bal);
+      const late = l.end_date && date && l.end_date > date;
+      return { g, saved, target, monthly, date, pct: saved / target * 100, tone: late ? 'warn' : 'good',
+        status: late ? 'Lewat dari sasaran' : 'Ikut jadual', info: `Baki ${rm(bal)} · ${rm(monthly)}/bulan · tamat ${fmtDate(l.end_date)}` };
+    } else {
+      if (g.done_on) return { g, tone: 'good', status: 'Dicapai ' + fmtDate(g.done_on) };
+      return { g, date, tone: 'muted', status: 'Belum' };
+    }
+    saved = round2(saved);
+    if (g.done_on || (target != null && saved >= target)) return { g, saved, target, monthly, src, date, pct: 100, tone: 'good', status: g.done_on ? 'Dicapai ' + fmtDate(g.done_on) : 'Sasaran dicapai' };
+    if (target == null) return { g, saved, monthly, src, date, tone: 'muted', status: 'Tiada sasaran amaun' };
+    if (g.kind === 'kwsp' && date) {
+      const m = Math.max(1, monthsBetween(todayIso(), date)), r = KWSP_DIV / 12, f = (1 + r) ** m;
+      const proj = kwspFv(saved, monthly, m), need = Math.max(0, round2((target - saved * f) * r / (f - 1)));
+      const ok = proj >= target;
+      return { g, saved, target, monthly, src, date, need, pct: saved / target * 100, tone: ok ? 'good' : 'warn', status: ok ? 'Ikut jadual' : 'Lewat',
+        info: `Unjuran ${fmtDate(date)}: <b class="${ok ? 'good' : 'warn'}">${rm(proj)}</b> <span class="muted">(dividen ${KWSP_DIV * 100}%)</span>` };
+    }
+    const remaining = round2(target - saved);
+    const mLeft = date ? Math.max(1, monthsBetween(todayIso(), date)) : null;
+    const need = mLeft ? round2(remaining / mLeft) : null;
+    const eta = monthly > 0 ? addMonths(todayIso(), Math.ceil(remaining / monthly)) : null;
+    const future = g.phase > nowPhase();
+    const tone = need == null ? (monthly > 0 ? 'good' : 'muted') : monthly >= need - 0.5 ? 'good' : monthly > 0 ? 'warn' : future ? 'muted' : 'bad';
+    const status = tone === 'good' ? 'Ikut jadual' : tone === 'warn' ? 'Lewat' : future ? 'Belum mula' : 'Tiada caruman';
+    return { g, saved, target, monthly, src, date, remaining, need, eta, pct: saved / target * 100, tone, status };
+  }
+
+  function renderGoals(v) {
+    const age = ageAt(todayIso()), np = nowPhase();
+    const calcs = S.goals.map(goalCalc);
+    // keperluan fasa semasa: item dikongsi (cth kecemasan 3 & 6 bulan) dikira sekali, ambil keperluan tertinggi
+    const cur = calcs.filter((c) => c.g.phase === np && c.need != null && c.g.kind === 'simpanan');
+    const byItem = {};
+    for (const c of cur) { const k = c.g.item_id || c.g.id; byItem[k] = Math.max(byItem[k] || 0, c.need); }
+    const needNow = round2(Object.values(byItem).reduce((s, n) => s + n, 0));
+    const haveNow = round2([...new Set(cur.map((c) => c.g.item_id).filter(Boolean))].reduce((s, id) => { const it = S.items.find((i) => i.id === id); return s + (it?.active ? num(it.amount) : 0); }, 0));
+    const invest = round2(activeSelfItems().filter((i) => i.bucket === 'invest').reduce((s, i) => s + num(i.amount), 0));
+    const late = calcs.filter((c) => c.g.phase === np && (c.tone === 'warn' || c.tone === 'bad'));
+
+    const card = (c) => {
+      const g = c.g, ad = c.date ? ageAt(c.date) : null;
+      return `<div class="card goal ${c.tone}">
+        <div class="card-h"><h3>${g.priority ? `<span class="prio">#${g.priority}</span>` : ''}${esc(g.name)}</h3><span class="tag ${c.tone}">${esc(c.status)}</span></div>
+        ${c.target != null ? `<div class="row"><b class="grow">${amt(c.saved)} <span class="muted small">/ ${amt(c.target)}</span></b><span class="small muted">${Math.floor(Math.min(100, c.pct || 0))}%</span></div>
+          <div class="bar"><i class="${c.tone === 'warn' || c.tone === 'bad' ? 'warn' : ''}" data-w="${Math.min(100, c.pct || 0)}"></i></div>` : ''}
+        <div class="small goal-meta">
+          ${c.date ? `<span>Sasaran <b>${fmtDate(c.date)}</b>${ad != null ? ` · umur ${ad}` : ''}</span>` : '<span class="muted">Tiada tarikh sasaran</span>'}
+          ${g.kind === 'simpanan' || g.kind === 'kwsp' ? `<span>Caruman ${c.monthly ? `<b>${rm(c.monthly)}</b>/bulan${c.src ? ` (${esc(c.src)})` : ''}` : '<b>tiada</b>'}</span>` : ''}
+          ${c.need != null ? `<span>Perlu <b class="${c.tone === 'muted' ? '' : c.tone}">${rm(c.need)}</b>/bulan untuk capai tepat masa</span>` : ''}
+          ${c.eta && c.tone !== 'good' ? `<span>Ikut kadar sekarang siap <b>${monthLabel(c.eta)}</b>${ageAt(c.eta) != null ? ` (umur ${ageAt(c.eta)})` : ''}</span>` : ''}
+          ${c.info ? `<span>${c.info}</span>` : ''}
+          ${g.kind === 'kwsp' && c.saved != null ? kwspBench(c) : ''}
+        </div>
+        ${g.notes ? `<details class="note"><summary>Nota</summary><div>${esc(g.notes)}</div></details>` : ''}
+        <div class="row" style="margin-top:8px"><button class="btn ghost sm" data-edit-goal="${g.id}">Edit</button>
+          ${g.kind === 'pencapaian' && !g.done_on ? `<button class="btn sm" data-done-goal="${g.id}">Tanda dicapai</button>` : ''}</div>
+      </div>`;
+    };
+
+    v.innerHTML = `
+      <div class="card">
+        <div class="card-h"><h2>Pelan hidup</h2>${age != null ? `<span class="muted small">Umur ${age} · ${PHASES[np][0]} sekarang</span>` : ''}</div>
+        ${!birth() ? '<p class="warn small">Tarikh lahir belum ditetapkan, jadi umur & fasa tak dapat dikira.</p>' : ''}
+        <div class="phases">${Object.entries(PHASES).map(([k, [n, t, a, b]]) => `<div class="ph ${Number(k) === np ? 'on' : Number(k) < np ? 'past' : ''}"><b>${n}</b><span>${a == null ? `${age ?? ''}→${b}` : `${a}an`}</span><span class="small">${t}</span></div>`).join('')}</div>
+        ${needNow ? `<p class="small" style="margin-top:12px">${PHASES[np][0]} perlu <b>${rm(needNow)}</b>/bulan untuk capai semua sasaran tepat masa. Caruman sekarang <b class="${haveNow >= needNow ? 'good' : 'warn'}">${rm(haveNow)}</b>/bulan (pot Invest ${rm(invest)}).
+          ${haveNow < needNow ? 'Tak cukup untuk semua serentak: ikut keutamaan #1 dulu, dan bila satu siap, pindahkan carumannya ke yang seterusnya.' : ''}</p>` : ''}
+        ${late.length ? `<p class="small warn">${late.length} matlamat ${PHASES[np][0]} lewat: ${late.map((c) => esc(c.g.name)).join(', ')}.</p>` : ''}
+        <div class="row" style="margin-top:8px"><button class="btn primary sm" id="addGoal">＋ Matlamat</button><span class="muted small">Angka anggaran, ubah bila-bila masa (Edit).</span></div>
+      </div>
+      ${Object.entries(PHASES).map(([k, [n, t, a, b]]) => {
+        const list = calcs.filter((c) => c.g.phase === Number(k)).sort((x, y) => (!!x.g.done_on - !!y.g.done_on) || x.g.priority - y.g.priority || x.g.sort - y.g.sort);
+        const from = a == null ? null : birthdayAt(a), to = birthdayAt(b);
+        return `<section class="phase-sec">
+          <h2>${n} · ${t} <span class="muted small">${a == null ? `sekarang → umur ${b}` : `umur ${a}–${b - 1}`}${to ? ` · ${from ? from.slice(0, 4) : 'kini'}–${to.slice(0, 4)}` : ''}</span></h2>
+          <div class="grid g2">${list.map(card).join('') || '<div class="card muted small">Tiada matlamat.</div>'}</div>
+        </section>`;
+      }).join('')}`;
+    $$('.bar > i', v).forEach((i) => { i.style.width = i.dataset.w + '%'; });
+    $('#addGoal').onclick = () => goalDialog(null);
+    $$('[data-edit-goal]', v).forEach((b) => (b.onclick = () => goalDialog(S.goals.find((g) => g.id === b.dataset.editGoal))));
+    $$('[data-done-goal]', v).forEach((b) => (b.onclick = async () => { await q(sb.from('goals').update({ done_on: todayIso() }).eq('id', b.dataset.doneGoal)); await reload(); toast('Tahniah, matlamat dicapai.'); }));
+  }
+
+  // KWSP: unjuran ke penanda aras umur seterusnya (caruman sekarang, tanpa dividen)
+  function kwspBench(c) {
+    const age = ageAt(todayIso()); if (age == null) return '';
+    const nb = KWSP_BENCH.find(([a]) => a > age); if (!nb) return '';
+    const at = birthdayAt(nb[0]), proj = kwspFv(c.saved, c.monthly, Math.max(0, monthsBetween(todayIso(), at)));
+    return `<span>Penanda aras umur ${nb[0]}: <b>${rm(nb[1])}</b> · unjuran ${fmtDate(at)}: <b class="${proj >= nb[1] ? 'good' : 'warn'}">${rm(proj)}</b></span>
+      ${!num(c.g.opening_balance) ? '<span class="muted">Terkumpul = caruman dalam slip gaji sahaja. Isi baki i-Akaun sebenar (Edit) untuk angka tepat.</span>' : ''}`;
+  }
+
+  function goalDialog(gl) {
+    const g = gl || { name: '', phase: nowPhase(), kind: 'simpanan', target_amount: '', target_date: '', item_id: '', loan_id: '', opening_balance: 0, balance_as_of: '', priority: 0, notes: '', sort: (S.goals.at(-1)?.sort || 0) + 1 };
+    const invItems = S.items.filter((i) => i.bucket === 'invest' && (i.active || i.id === g.item_id));
+    dialog(`<h2>${gl ? 'Edit matlamat' : 'Matlamat baru'}</h2>
+      <label>Nama<input name="name" value="${esc(g.name)}" required maxlength="60"></label>
+      <div class="grid g2"><label>Fasa<select name="phase">${Object.entries(PHASES).map(([k, [n, t]]) => `<option value="${k}" ${Number(g.phase) === Number(k) ? 'selected' : ''}>${n} · ${t}</option>`).join('')}</select></label>
+        <label>Jenis<select name="kind">${Object.entries(GOAL_KINDS).map(([k, l]) => `<option value="${k}" ${g.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+      <div class="grid g2"><label>Sasaran (RM)<input name="target_amount" type="number" step="0.01" min="0" value="${g.target_amount ?? ''}"></label>
+        <label>Tarikh sasaran<input name="target_date" type="date" value="${g.target_date || ''}"></label></div>
+      <label>Item caruman (Simpanan)<select name="item_id"><option value="">— tiada —</option>${invItems.map((i) => `<option value="${i.id}" ${i.id === g.item_id ? 'selected' : ''}>${esc(i.name)} · ${rm(i.amount)}</option>`).join('')}</select></label>
+      <label>Pinjaman (Langsai hutang)<select name="loan_id"><option value="">— tiada —</option>${S.loans.map((l) => `<option value="${l.id}" ${l.id === g.loan_id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
+      <div class="grid g2"><label>Baki sedia ada (RM)<input name="opening_balance" type="number" step="0.01" min="0" value="${num(g.opening_balance)}"><span class="muted small">Cth simpanan lama / baki i-Akaun</span></label>
+        <label>Baki pada tarikh<input name="balance_as_of" type="date" value="${g.balance_as_of || ''}"><span class="muted small">Caruman selepas tarikh ini ditambah</span></label></div>
+      <div class="grid g2"><label>Keutamaan (1 = dulu)<input name="priority" type="number" min="0" value="${num(g.priority)}"></label>
+        <label>Tarikh dicapai<input name="done_on" type="date" value="${g.done_on || ''}"></label></div>
+      <label>Nota<input name="notes" value="${esc(g.notes || '')}" maxlength="300"></label>
+      ${gl ? '<button type="button" class="btn ghost danger sm" id="delGoal">Padam matlamat</button>' : ''}`, async (fd) => {
+      const kind = fd.get('kind');
+      const row = { name: fd.get('name').trim(), phase: Number(fd.get('phase')), kind, target_amount: nOrNull(fd.get('target_amount')), target_date: fd.get('target_date') || null,
+        item_id: kind === 'simpanan' ? (fd.get('item_id') || null) : null, loan_id: kind === 'hutang' ? (fd.get('loan_id') || null) : null,
+        opening_balance: num(fd.get('opening_balance')), balance_as_of: fd.get('balance_as_of') || null, priority: Number(fd.get('priority')) || 0,
+        done_on: fd.get('done_on') || null, notes: fd.get('notes') || null, sort: g.sort };
+      if (gl) await q(sb.from('goals').update(row).eq('id', gl.id)); else await q(sb.from('goals').insert(row));
+      await reload(); toast('Matlamat disimpan.');
+    });
+    if (gl) $('#delGoal').onclick = async () => {
+      if (!confirm(`Padam matlamat "${gl.name}"? (Masih ada dalam audit log)`)) return;
+      await q(sb.from('goals').delete().eq('id', gl.id)); $('#dlg').close(); await reload();
+    };
+  }
+
   // ================= ITEM =================
   function renderItems(v) {
     const f = S.itemFilter || 'all', fk = S.itemKind || 'all';
@@ -643,12 +820,7 @@
   function renderLoans(v) {
     v.innerHTML = `<div class="row"><h2 class="grow">Pinjaman</h2><button class="btn primary sm" id="addLoan">＋ Pinjaman</button></div>
       <div class="grid g2">${S.loans.map((l) => {
-        const pays = S.payments.filter((p) => p.loan_id === l.id);
-        const paidTotal = pays.reduce((s, p) => s + num(p.amount), 0);
-        // baki = baki penyata terakhir − bayaran yg dibuat selepas penyata tu (anggaran, tanpa ujrah baru)
-        const bi = pays.findIndex((p) => p.balance_after != null);
-        const bal = bi >= 0 ? num(pays[bi].balance_after) - pays.slice(0, bi).reduce((s, p) => s + num(p.amount), 0)
-          : (l.original_amount != null ? num(l.original_amount) - paidTotal : null);
+        const { pays, bi, paid: paidTotal, bal } = loanBal(l);
         const pct = l.original_amount && bal != null ? Math.max(0, Math.min(100, (1 - bal / num(l.original_amount)) * 100)) : null;
         const mon = num(l.monthly);
         const totalInst = l.start_date && l.end_date ? monthsBetween(l.start_date, l.end_date) + 1 : null;
@@ -998,8 +1170,8 @@
   }
   const stamp = () => new Date().toISOString().slice(0, 10);
   function exportJson() {
-    const { settings, accounts, items, periods, entries, transfers, loans, payments, payslips } = S;
-    download(`zak-financial-backup-${stamp()}.json`, JSON.stringify({ exported_at: new Date().toISOString(), settings, accounts, items, periods, entries, transfers, loans, loan_payments: payments, payslips }, null, 2), 'application/json');
+    const { settings, accounts, items, periods, entries, transfers, loans, payments, payslips, goals } = S;
+    download(`zak-financial-backup-${stamp()}.json`, JSON.stringify({ exported_at: new Date().toISOString(), settings, accounts, items, periods, entries, transfers, loans, loan_payments: payments, payslips, goals }, null, 2), 'application/json');
   }
   function exportCsv() {
     const cell = (s) => { const t = String(s ?? ''); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };

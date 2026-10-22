@@ -195,6 +195,28 @@ details.note > div { white-space: normal; max-width: 34ch; margin-top: 4px; line
 .chip.on.company, .chip.on.other { background: var(--ink); border-color: var(--ink); color: var(--surface); }
 @media (max-width: 560px) { .citem { grid-template-columns: 1fr; } .chips { justify-content: flex-start; } }
 
+/* matlamat */
+.phases { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 6px; }
+.ph { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; background: var(--surface-2); }
+.ph span { color: var(--muted); font-size: 13px; }
+.ph.on { border-color: var(--accent); background: var(--accent-soft); }
+.ph.on b { color: var(--accent); }
+.ph.past { opacity: .55; }
+@media (max-width: 560px) { .ph { padding: 6px 8px; } .ph .small { display: none; } }
+.phase-sec { display: flex; flex-direction: column; gap: 10px; }
+.phase-sec h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.goal { display: flex; flex-direction: column; gap: 8px; border-left: 4px solid var(--line); }
+.goal.good { border-left-color: var(--good); } .goal.warn { border-left-color: var(--warn); } .goal.bad { border-left-color: var(--bad); }
+.goal .card-h { margin-bottom: 0; }
+.goal h3 { font-size: 16px; }
+.prio { color: var(--muted); font-size: 13px; font-weight: 600; margin-right: 6px; }
+.tag { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 99px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.tag.good { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.tag.bad { background: var(--bad-soft); color: var(--bad); }
+.goal-meta { display: flex; flex-direction: column; gap: 3px; color: var(--ink); }
+.goal-meta .muted { color: var(--muted); }
+
 .progress-line { font-size: 13px; color: var(--muted); }
 
 /* chart */
