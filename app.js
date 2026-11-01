@@ -917,8 +917,10 @@
 
   function scenarioCard(s) {
     const sim = simulateWhatIf(num(s.amount));
+    const targetItem = s.target_item_id ? S.items.find((i) => i.id === s.target_item_id) : null;
     return `<div class="card">
       <div class="card-h"><h2>${esc(s.name)}</h2><span class="muted small">+${rm(s.amount)}/bulan</span></div>
+      ${targetItem ? `<p class="small">Naikkan item <b>${esc(targetItem.name)}</b>: ${amt(targetItem.amount)} → <b>${amt(round2(num(targetItem.amount) + num(s.amount)))}</b></p>` : `<p class="muted small">Akan cipta item Komitmen baharu.</p>`}
       ${s.notes ? `<p class="muted small">${esc(s.notes)}</p>` : ''}
       ${simBreakdownHtml(sim, num(s.amount))}
       <div class="row" style="margin-top:12px"><button class="btn ghost sm" data-discard="${s.id}">Buang</button><button class="btn primary sm" data-apply="${s.id}" ${sim.shortfall > 0 ? 'disabled' : ''}>Apply — jadikan sebenar</button></div>
@@ -926,11 +928,14 @@
   }
 
   function scenarioDialog(prefill = {}) {
+    const komitmenItems = S.items.filter((i) => i.bucket === 'komitmen' && i.active).sort(itemOrder);
     dialog(`<h2>Scenario What If baharu</h2>
       <label>Nama<input name="name" required maxlength="80" placeholder="cth Naik taraf Takaful"></label>
       <label>Tambahan komitmen bulanan (RM)<input name="amount" type="number" step="0.01" min="0" required value="${prefill.amount ?? ''}"></label>
+      <label>Naikkan item sedia ada?<select name="target_item_id"><option value="">— Item baharu (komitmen baru terus) —</option>${komitmenItems.map((i) => `<option value="${i.id}">${esc(i.name)} (${rm(i.amount)})</option>`).join('')}</select>
+        <span class="muted small">Pilih item kalau ni naik taraf komitmen sedia ada (cth Takaful RM173 → RM335). Biar kosong untuk komitmen betul-betul baharu.</span></label>
       <label>Nota<input name="notes" maxlength="200" placeholder="cth 173 → 173+162"></label>`, async (fd) => {
-      await q(sb.from('what_if_scenarios').insert({ name: fd.get('name').trim(), amount: Number(fd.get('amount')), notes: fd.get('notes') || null }));
+      await q(sb.from('what_if_scenarios').insert({ name: fd.get('name').trim(), amount: Number(fd.get('amount')), notes: fd.get('notes') || null, target_item_id: fd.get('target_item_id') || null }));
       await reload(); toast('Scenario dicipta.');
     });
   }
@@ -938,12 +943,25 @@
   async function applyScenario(s) {
     const sim = simulateWhatIf(num(s.amount));
     if (sim.shortfall > 0) return toast('Invest tak cukup untuk tampung scenario ini.', true);
-    if (!confirm(`Apply "${s.name}"? Ini akan cipta item Komitmen baharu ${rm(s.amount)} dan kurangkan ${sim.cuts.filter((c) => c.cut > 0).length} item Invest. Boleh edit manual lepas ni, tapi tiada auto-reverse.`)) return;
-    const newItem = await q(sb.from('items').insert({ name: s.name, amount: num(s.amount), bucket: 'komitmen', paid_by: 'self', active: true, notes: s.notes || 'Dari What If', sort: (S.items.at(-1)?.sort || 0) + 1 }).select().single());
+    const targetItem = s.target_item_id ? S.items.find((i) => i.id === s.target_item_id) : null;
+    const confirmMsg = targetItem
+      ? `Apply "${s.name}"? Ini akan naikkan item "${targetItem.name}" dari ${rm(targetItem.amount)} ke ${rm(round2(num(targetItem.amount) + num(s.amount)))}, dan kurangkan ${sim.cuts.filter((c) => c.cut > 0).length} item Invest. Boleh edit manual lepas ni, tapi tiada auto-reverse.`
+      : `Apply "${s.name}"? Ini akan cipta item Komitmen baharu ${rm(s.amount)} dan kurangkan ${sim.cuts.filter((c) => c.cut > 0).length} item Invest. Boleh edit manual lepas ni, tapi tiada auto-reverse.`;
+    if (!confirm(confirmMsg)) return;
+    let affectedItemId, targetSnap = null;
+    if (targetItem) {
+      const newAmount = round2(num(targetItem.amount) + num(s.amount));
+      await q(sb.from('items').update({ amount: newAmount }).eq('id', targetItem.id));
+      affectedItemId = targetItem.id;
+      targetSnap = { name: targetItem.name, oldAmount: num(targetItem.amount), newAmount };
+    } else {
+      const newItem = await q(sb.from('items').insert({ name: s.name, amount: num(s.amount), bucket: 'komitmen', paid_by: 'self', active: true, notes: s.notes || 'Dari What If', sort: (S.items.at(-1)?.sort || 0) + 1 }).select().single());
+      affectedItemId = newItem.id;
+    }
     await Promise.all(sim.cuts.filter((c) => c.cut > 0).map((c) => q(sb.from('items').update({ amount: c.newAmount }).eq('id', c.item.id))));
     await q(sb.from('what_if_scenarios').update({
-      status: 'applied', applied_at: new Date().toISOString(), item_id: newItem.id,
-      snapshot: { amount: num(s.amount), komitmenOld: sim.komitmenOld, komitmenNew: sim.komitmenNew, investOld: sim.investOld, investNew: sim.investNew,
+      status: 'applied', applied_at: new Date().toISOString(), item_id: affectedItemId,
+      snapshot: { amount: num(s.amount), komitmenOld: sim.komitmenOld, komitmenNew: sim.komitmenNew, investOld: sim.investOld, investNew: sim.investNew, targetItem: targetSnap,
         cuts: sim.cuts.map((c) => ({ name: c.item.name, oldAmount: c.oldAmount, newAmount: c.newAmount, cut: c.cut })) },
     }).eq('id', s.id));
     await reload(); toast('Scenario di-apply.');
@@ -953,6 +971,7 @@
     const snap = s.snapshot || {};
     dialog(`<h2>${esc(s.name)}</h2>
       <p class="muted small">Di-apply ${fmtDate(s.applied_at?.slice(0, 10))} · +${rm(s.amount)}/bulan</p>
+      ${snap.targetItem ? `<p class="small">Item dinaikkan: <b>${esc(snap.targetItem.name)}</b> ${amt(snap.targetItem.oldAmount)} → <b>${amt(snap.targetItem.newAmount)}</b></p>` : `<p class="muted small">Item Komitmen baharu dicipta.</p>`}
       ${s.notes ? `<p class="small">${esc(s.notes)}</p>` : ''}
       <div class="grid g2">
         <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(snap.komitmenOld)} → <b>${amt(snap.komitmenNew)}</b></span></div></div>
