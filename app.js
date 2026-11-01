@@ -795,14 +795,13 @@
   const endBadge = (i) => { const l = monthsLeft(i.end_date); return `<div class="small ${l < 0 ? 'bad' : l <= 3 ? 'warn' : 'muted'}">Tamat ${fmtDate(i.end_date)} · ${l < 0 ? 'dah tamat' : l + ' bulan lagi'}</div>`; };
 
   function itemDialog(it, prefill) {
-    const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true, wi_priority: null, wi_floor: 0, ...prefill };
+    const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true, wi_floor: 0, ...prefill };
     dialog(`<h2>${it ? 'Edit item' : 'Item baru'}</h2>
       <label>Nama<input name="name" value="${esc(i.name)}" required maxlength="60"></label>
       <div class="grid g2"><label>Amaun (RM)<input name="amount" type="number" step="0.01" min="0" value="${num(i.amount)}" required></label>
         <label>Kategori<select name="bucket">${Object.entries(BUCKETS).map(([k, l]) => `<option value="${k}" ${i.bucket === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label>Jenis (untuk Invest)<select name="kind"><option value="">—</option>${Object.entries(KINDS).map(([k, l]) => `<option value="${k}" ${i.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="grid g2"><label>Dalam senarai What If (untuk Invest)<input name="wi_priority" type="number" min="1" value="${i.wi_priority ?? ''}"><span class="muted small">Isi mana-mana nombor = boleh dipotong (berkadar ikut %). Kosong = tak disentuh oleh What If</span></label>
-        <label>Had minimum What If (RM)<input name="wi_floor" type="number" step="0.01" min="0" value="${num(i.wi_floor)}"><span class="muted small">Tak boleh dipotong bawah amaun ini</span></label></div>
+      <label>Had minimum What If (RM, untuk Invest)<input name="wi_floor" type="number" step="0.01" min="0" value="${num(i.wi_floor)}"><span class="muted small">Tak boleh dipotong bawah amaun ini bila komitmen baharu diselesaikan</span></label>
       <div class="grid g2"><label>Akaun<select name="account_id">${optAccounts(i.account_id)}</select></label>
         <label>Bayar oleh<select name="paid_by"><option value="self" ${i.paid_by === 'self' ? 'selected' : ''}>Sendiri</option><option value="company" ${i.paid_by === 'company' ? 'selected' : ''}>Company</option></select></label></div>
       <label>No. rujukan / akaun<input name="ref_no" value="${esc(i.ref_no || '')}" maxlength="60"></label>
@@ -812,7 +811,7 @@
         <label class="check"><input type="checkbox" name="active" ${i.active ? 'checked' : ''}> Aktif</label></div>`, async (fd) => {
       const row = { name: fd.get('name').trim(), amount: Number(fd.get('amount')), bucket: fd.get('bucket'), kind: fd.get('bucket') === 'invest' ? (fd.get('kind') || null) : null, account_id: fd.get('account_id') || null,
         paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, end_date: fd.get('end_date') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on',
-        wi_priority: fd.get('bucket') === 'invest' && fd.get('wi_priority') ? Number(fd.get('wi_priority')) : null, wi_floor: fd.get('bucket') === 'invest' ? Number(fd.get('wi_floor') || 0) : 0 };
+        wi_floor: fd.get('bucket') === 'invest' ? Number(fd.get('wi_floor') || 0) : 0 };
       // rekod lama tanpa amaun khusus ikut amaun semasa item; kunci dulu supaya sejarah tak berubah
       if (it && num(it.amount) !== row.amount) await q(sb.from('entries').update({ amount: num(it.amount) }).eq('item_id', it.id).is('amount', null));
       if (it) await q(sb.from('items').update(row).eq('id', it.id)); else await q(sb.from('items').insert(row));
@@ -821,25 +820,21 @@
   }
 
   // ================= WHAT IF =================
-  // Simulasi komitmen baharu: Komitmen naik, Invest kena potong, Self Reward tak disentuh.
-  // Item dalam senarai (wi_priority bukan null) dipotong secara BERKADAR (proportional) ikut % amaun asal
-  // masing-masing — bukan habiskan satu dulu baru pindah — supaya tiada item jatuh ke 0% melainkan terpaksa.
-  // wi_floor tetap had keras: item yang kena had "dikunci" kat floor dia, baki potongan diagih semula
-  // secara berkadar antara item yang belum kena had (water-filling), ulang sampai stabil.
+  // Simulasi komitmen baharu: Komitmen naik, semua item Invest kena potong, Self Reward tak disentuh.
+  // Potongan BERKADAR (proportional) ikut % amaun asal masing-masing — supaya tiada item jatuh ke 0%
+  // melainkan terpaksa. wi_floor tetap had keras: item yang kena had "dikunci" kat floor dia, baki
+  // potongan diagih semula secara berkadar antara item yang belum kena had (water-filling), ulang sampai stabil.
   function simulateWhatIf(amount) {
     const items = activeSelfItems();
     const inv = items.filter((i) => i.bucket === 'invest');
-    const ranked = inv.filter((i) => i.wi_priority != null);
-    const untouched = inv.filter((i) => i.wi_priority == null);
     const komitmenOld = round2(items.filter((i) => i.bucket === 'komitmen').reduce((s, i) => s + num(i.amount), 0));
     const investOld = round2(inv.reduce((s, i) => s + num(i.amount), 0));
-    const rankedOld = round2(ranked.reduce((s, i) => s + num(i.amount), 0));
-    const rankedFloorTotal = round2(ranked.reduce((s, i) => s + num(i.wi_floor), 0));
-    const rankedTarget = round2(rankedOld - amount);                       // jumlah pool ranked yang sepatutnya lepas potong
-    const shortfall = Math.max(0, round2(rankedFloorTotal - rankedTarget)); // tak dapat dipotong sebanyak ni tanpa langgar floor
-    const feasibleTarget = Math.max(rankedTarget, rankedFloorTotal);
+    const investTarget = round2(investOld - amount);                       // jumlah Invest yang sepatutnya lepas potong
+    const floorTotal = round2(inv.reduce((s, i) => s + num(i.wi_floor), 0));
+    const shortfall = Math.max(0, round2(floorTotal - investTarget));      // tak dapat dipotong sebanyak ni tanpa langgar floor
+    const feasibleTarget = Math.max(investTarget, floorTotal);
 
-    const pool = ranked.map((i) => ({ item: i, w: num(i.amount), floor: num(i.wi_floor), clamped: false, newAmount: num(i.amount) }));
+    const pool = inv.map((i) => ({ item: i, w: num(i.amount), floor: num(i.wi_floor), clamped: false, newAmount: num(i.amount) }));
     for (let guard = pool.length + 1; guard > 0; guard--) {
       const clampedSum = round2(pool.filter((p) => p.clamped).reduce((s, p) => s + p.floor, 0));
       const free = pool.filter((p) => !p.clamped);
@@ -855,30 +850,24 @@
       if (!newlyClamped) break;
     }
     const cuts = pool.map((p) => ({ item: p.item, oldAmount: p.w, newAmount: p.newAmount, cut: round2(p.w - p.newAmount) }));
-    const investNew = round2(cuts.reduce((s, c) => s + c.newAmount, 0) + untouched.reduce((s, i) => s + num(i.amount), 0));
-    return { cuts, shortfall, komitmenOld, komitmenNew: round2(komitmenOld + amount), investOld, investNew, untouched };
+    const investNew = round2(cuts.reduce((s, c) => s + c.newAmount, 0));
+    return { cuts, shortfall, komitmenOld, komitmenNew: round2(komitmenOld + amount), investOld, investNew };
   }
 
   function renderWhatIf(v) {
     const drafts = S.whatIfScenarios.filter((s) => s.status === 'draft');
     const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
-    const inv = S.items.filter((i) => i.bucket === 'invest' && i.active);
+    const inv = S.items.filter((i) => i.bucket === 'invest' && i.active).sort((a, b) => num(b.amount) - num(a.amount));
     const investTotal = round2(inv.reduce((s, i) => s + num(i.amount), 0));
-    const ranked = inv.filter((i) => i.wi_priority != null).sort((a, b) => num(b.amount) - num(a.amount));
-    const untouched = inv.filter((i) => i.wi_priority == null);
-    const wiRow = (i, inList) => `<tr>
-        <td><b>${esc(i.name)}</b></td><td class="r">${amt(i.amount)}</td><td class="r muted small">${investTotal ? round2(num(i.amount) / investTotal * 100) : 0}%</td>
-        <td><input type="number" step="0.01" min="0" max="${num(i.amount)}" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px"></td>
-        <td class="r">${inList ? `<button class="btn ghost sm" data-wi-remove="${i.id}">Buang</button>` : `<button class="btn ghost sm" data-wi-add="${i.id}">+ Senarai</button>`}</td></tr>`;
     v.innerHTML = `<div class="card">
         <div class="card-h"><h2>What If</h2><button class="btn primary sm" id="addScenario">＋ Scenario</button></div>
         <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja</b>. Self Reward tak disentuh.</p>
       </div>
       <div class="card">
-        <div class="card-h"><h2>Item Invest boleh dipotong</h2><span class="muted small">Dipotong secara berkadar (proportional) ikut % di atas, bukan satu-satu</span></div>
-        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Amaun</th><th class="r">% drpd Invest (${amt(investTotal)})</th><th>Had minimum (RM)</th><th></th></tr></thead><tbody>
-          ${ranked.map((i) => wiRow(i, true)).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai lagi.</td></tr>'}
-          ${untouched.length ? `<tr><td colspan="5" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, false)).join('')}` : ''}
+        <div class="card-h"><h2>Item Invest</h2><span class="muted small">Semua item dipotong secara berkadar (proportional) ikut % di atas; had minimum jadi perlindungan keras</span></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Amaun</th><th class="r">% drpd Invest (${amt(investTotal)})</th><th>Had minimum (RM)</th></tr></thead><tbody>
+          ${inv.map((i) => `<tr><td><b>${esc(i.name)}</b></td><td class="r">${amt(i.amount)}</td><td class="r muted small">${investTotal ? round2(num(i.amount) / investTotal * 100) : 0}%</td>
+            <td><input type="number" step="0.01" min="0" max="${num(i.amount)}" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px"></td></tr>`).join('') || '<tr><td colspan="4" class="muted">Tiada item invest aktif.</td></tr>'}
         </tbody></table></div>
       </div>
       <div class="card">
@@ -905,23 +894,10 @@
     };
     calcInput.oninput = paintCalc;
     paintCalc();
-    $$('[data-wi-add]', v).forEach((b) => (b.onclick = () => addToWiPriority(b.dataset.wiAdd)));
-    $$('[data-wi-remove]', v).forEach((b) => (b.onclick = () => removeFromWiPriority(b.dataset.wiRemove)));
     $$('[data-wi-floor]', v).forEach((inp) => (inp.onchange = () => q(sb.from('items').update({ wi_floor: Number(inp.value) || 0 }).eq('id', inp.dataset.wiFloor)).then(reload)));
     $$('[data-apply]', v).forEach((b) => (b.onclick = () => applyScenario(S.whatIfScenarios.find((s) => s.id === b.dataset.apply))));
     $$('[data-discard]', v).forEach((b) => (b.onclick = async () => { if (!confirm('Buang scenario draf ini?')) return; await q(sb.from('what_if_scenarios').delete().eq('id', b.dataset.discard)); await reload(); }));
     $$('[data-view-snap]', v).forEach((b) => (b.onclick = () => snapshotDialog(S.whatIfScenarios.find((s) => s.id === b.dataset.viewSnap))));
-  }
-
-  async function addToWiPriority(id) {
-    const max = Math.max(0, ...S.items.filter((x) => x.bucket === 'invest' && x.wi_priority != null).map((x) => x.wi_priority));
-    await q(sb.from('items').update({ wi_priority: max + 1 }).eq('id', id));
-    await reload();
-  }
-
-  async function removeFromWiPriority(id) {
-    await q(sb.from('items').update({ wi_priority: null }).eq('id', id));
-    await reload();
   }
 
   // bahagian paparan dikongsi antara scenario tersimpan & kalkulator pantas
@@ -929,14 +905,13 @@
     const sp = split(), inc = income();
     const komitmenPctNew = inc ? round2(sim.komitmenNew / inc * 100) : 0;
     const investPctNew = inc ? round2(sim.investNew / inc * 100) : 0;
-    return `${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item dalam senarai What If dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
+    return `${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item Invest dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
       <div class="grid g2">
         <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(sim.komitmenOld)} → <b>${amt(sim.komitmenNew)}</b></span></div><div class="small muted">sasaran ${sp.komitmen}% · jadi ${komitmenPctNew}% sebenar</div></div>
         <div class="bucket"><div class="row"><b class="grow">Invest</b><span>${amt(sim.investOld)} → <b class="${sim.shortfall > 0 ? 'bad' : ''}">${amt(sim.investNew)}</b></span></div><div class="small muted">sasaran ${sp.invest}% · jadi ${investPctNew}% sebenar</div></div>
       </div>
       <div class="tbl-wrap"><table><thead><tr><th>Item invest</th><th class="r">Sekarang</th><th class="r">Lepas</th><th class="r">Potong</th><th class="r">% drpd Invest baharu</th></tr></thead><tbody>
-        ${sim.cuts.map((c) => `<tr><td>${esc(c.item.name)}${c.cut > 0 && c.newAmount <= num(c.item.wi_floor) ? ' <span class="small warn">(kena had)</span>' : ''}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td><td class="r">${c.cut > 0 ? amt(c.cut) : '—'}</td><td class="r">${sim.investNew ? round2(c.newAmount / sim.investNew * 100) : 0}%</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai What If — tambah dulu kat panel "Item Invest boleh dipotong" di atas.</td></tr>'}
-        ${sim.untouched.map((i) => `<tr><td>${esc(i.name)} <span class="small muted">(tak disentuh)</span></td><td class="r">${amt(i.amount)}</td><td class="r">${amt(i.amount)}</td><td class="r">—</td><td class="r">${sim.investNew ? round2(num(i.amount) / sim.investNew * 100) : 0}%</td></tr>`).join('')}
+        ${sim.cuts.map((c) => `<tr><td>${esc(c.item.name)}${c.cut > 0 && c.newAmount <= num(c.item.wi_floor) ? ' <span class="small warn">(kena had)</span>' : ''}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td><td class="r">${c.cut > 0 ? amt(c.cut) : '—'}</td><td class="r">${sim.investNew ? round2(c.newAmount / sim.investNew * 100) : 0}%</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Tiada item invest aktif.</td></tr>'}
       </tbody></table></div>`;
   }
 
