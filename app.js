@@ -31,7 +31,7 @@
   const monthsBetween = (a, b) => { const x = new Date(a + 'T00:00:00'), y = new Date(b + 'T00:00:00'); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth(); };
 
   const S = {
-    settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [],
+    settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [], whatIfScenarios: [],
     view: 'ringkasan', periodId: null, matrix: true, // Rekod buka dalam Jadual penuh
   };
 
@@ -104,7 +104,7 @@
   $('#logoutBtn').addEventListener('click', logout);
   async function logout() {
     await sb.auth.signOut();
-    Object.assign(S, { settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [] });
+    Object.assign(S, { settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [], whatIfScenarios: [] });
     $('#view').innerHTML = '';
     showLogin();
   }
@@ -125,7 +125,7 @@
 
   // ================= DATA =================
   async function loadAll() {
-    const [settings, accounts, items, periods, entries, transfers, loans, payments, payslips, goals] = await Promise.all([
+    const [settings, accounts, items, periods, entries, transfers, loans, payments, payslips, goals, whatIfScenarios] = await Promise.all([
       q(sb.from('settings').select('*')),
       q(sb.from('accounts').select('*').order('sort')),
       q(sb.from('items').select('*').order('sort')),
@@ -136,6 +136,7 @@
       q(sb.from('loan_payments').select('*').order('paid_on', { ascending: false })),
       q(sb.from('payslips').select('*').order('month', { ascending: false })),
       q(sb.from('goals').select('*').order('sort')),
+      q(sb.from('what_if_scenarios').select('*').order('created_at', { ascending: false })),
     ]);
     periods.sort((a, b) => b.month.localeCompare(a.month));
     payslips.sort((a, b) => b.month.localeCompare(a.month));
@@ -143,7 +144,7 @@
     items.sort(itemOrder);
     S.settings = Object.fromEntries(settings.map((r) => [r.key, r.value]));
     goals.sort((a, b) => a.sort - b.sort);
-    Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips, goals });
+    Object.assign(S, { accounts, items, periods, entries, transfers, loans, payments, payslips, goals, whatIfScenarios });
     if (!S.periodId || !periods.find((p) => p.id === S.periodId)) S.periodId = periods[0]?.id || null;
   }
 
@@ -168,7 +169,7 @@
 
   function render() {
     const v = $('#view');
-    ({ ringkasan: renderSummary, rekod: renderRecord, matlamat: renderGoals, item: renderItems, pinjaman: renderLoans, gaji: renderPayslips, tetapan: renderSettings })[S.view](v);
+    ({ ringkasan: renderSummary, rekod: renderRecord, matlamat: renderGoals, item: renderItems, pinjaman: renderLoans, gaji: renderPayslips, whatif: renderWhatIf, tetapan: renderSettings })[S.view](v);
   }
 
   // ================= RINGKASAN =================
@@ -794,12 +795,14 @@
   const endBadge = (i) => { const l = monthsLeft(i.end_date); return `<div class="small ${l < 0 ? 'bad' : l <= 3 ? 'warn' : 'muted'}">Tamat ${fmtDate(i.end_date)} · ${l < 0 ? 'dah tamat' : l + ' bulan lagi'}</div>`; };
 
   function itemDialog(it, prefill) {
-    const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true, ...prefill };
+    const i = it || { name: '', amount: 0, bucket: 'komitmen', account_id: '', paid_by: 'self', ref_no: '', notes: '', sort: (S.items.at(-1)?.sort || 0) + 1, active: true, wi_priority: null, wi_floor: 0, ...prefill };
     dialog(`<h2>${it ? 'Edit item' : 'Item baru'}</h2>
       <label>Nama<input name="name" value="${esc(i.name)}" required maxlength="60"></label>
       <div class="grid g2"><label>Amaun (RM)<input name="amount" type="number" step="0.01" min="0" value="${num(i.amount)}" required></label>
         <label>Kategori<select name="bucket">${Object.entries(BUCKETS).map(([k, l]) => `<option value="${k}" ${i.bucket === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label>Jenis (untuk Invest)<select name="kind"><option value="">—</option>${Object.entries(KINDS).map(([k, l]) => `<option value="${k}" ${i.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="grid g2"><label>Urutan potong What If (untuk Invest)<input name="wi_priority" type="number" min="1" value="${i.wi_priority ?? ''}"><span class="muted small">1 = dipotong dulu. Kosong = tak disentuh oleh What If</span></label>
+        <label>Had minimum What If (RM)<input name="wi_floor" type="number" step="0.01" min="0" value="${num(i.wi_floor)}"><span class="muted small">Tak boleh dipotong bawah amaun ini</span></label></div>
       <div class="grid g2"><label>Akaun<select name="account_id">${optAccounts(i.account_id)}</select></label>
         <label>Bayar oleh<select name="paid_by"><option value="self" ${i.paid_by === 'self' ? 'selected' : ''}>Sendiri</option><option value="company" ${i.paid_by === 'company' ? 'selected' : ''}>Company</option></select></label></div>
       <label>No. rujukan / akaun<input name="ref_no" value="${esc(i.ref_no || '')}" maxlength="60"></label>
@@ -808,12 +811,114 @@
       <div class="grid g2"><label>Susunan<input name="sort" type="number" value="${i.sort}"></label>
         <label class="check"><input type="checkbox" name="active" ${i.active ? 'checked' : ''}> Aktif</label></div>`, async (fd) => {
       const row = { name: fd.get('name').trim(), amount: Number(fd.get('amount')), bucket: fd.get('bucket'), kind: fd.get('bucket') === 'invest' ? (fd.get('kind') || null) : null, account_id: fd.get('account_id') || null,
-        paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, end_date: fd.get('end_date') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on' };
+        paid_by: fd.get('paid_by'), ref_no: fd.get('ref_no') || null, notes: fd.get('notes') || null, end_date: fd.get('end_date') || null, sort: Number(fd.get('sort')) || 0, active: fd.get('active') === 'on',
+        wi_priority: fd.get('bucket') === 'invest' && fd.get('wi_priority') ? Number(fd.get('wi_priority')) : null, wi_floor: fd.get('bucket') === 'invest' ? Number(fd.get('wi_floor') || 0) : 0 };
       // rekod lama tanpa amaun khusus ikut amaun semasa item; kunci dulu supaya sejarah tak berubah
       if (it && num(it.amount) !== row.amount) await q(sb.from('entries').update({ amount: num(it.amount) }).eq('item_id', it.id).is('amount', null));
       if (it) await q(sb.from('items').update(row).eq('id', it.id)); else await q(sb.from('items').insert(row));
       await reload(); toast('Item disimpan.');
     });
+  }
+
+  // ================= WHAT IF =================
+  // Simulasi komitmen baharu: Komitmen naik, Invest kena potong ikut wi_priority (1 = dulu), Self Reward tak disentuh.
+  function simulateWhatIf(amount) {
+    const items = activeSelfItems();
+    const inv = items.filter((i) => i.bucket === 'invest' && i.wi_priority != null).sort((a, b) => a.wi_priority - b.wi_priority || a.sort - b.sort);
+    let remaining = round2(amount);
+    const cuts = inv.map((i) => {
+      const cuttable = Math.max(0, round2(num(i.amount) - num(i.wi_floor)));
+      const take = Math.min(cuttable, remaining);
+      remaining = round2(remaining - take);
+      return { item: i, oldAmount: num(i.amount), newAmount: round2(num(i.amount) - take), cut: take };
+    });
+    const shortfall = Math.max(0, remaining);
+    const investCut = round2(amount - shortfall);
+    const komitmenOld = round2(items.filter((i) => i.bucket === 'komitmen').reduce((s, i) => s + num(i.amount), 0));
+    const investOld = round2(items.filter((i) => i.bucket === 'invest').reduce((s, i) => s + num(i.amount), 0));
+    return {
+      cuts, shortfall, komitmenOld, komitmenNew: round2(komitmenOld + amount), investOld, investNew: round2(investOld - investCut),
+      untouched: items.filter((i) => i.bucket === 'invest' && i.wi_priority == null),
+    };
+  }
+
+  function renderWhatIf(v) {
+    const inc = income();
+    const drafts = S.whatIfScenarios.filter((s) => s.status === 'draft');
+    const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
+    v.innerHTML = `<div class="card">
+        <div class="card-h"><h2>What If</h2><button class="btn primary sm" id="addScenario">＋ Scenario</button></div>
+        <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja</b>. Self Reward tak disentuh.</p>
+      </div>
+      ${drafts.length ? drafts.map((s) => scenarioCard(s, inc)).join('') : '<div class="card muted">Tiada scenario draf. Cipta satu untuk mula simulasi.</div>'}
+      ${applied.length ? `<div class="card"><div class="card-h"><h2>Sejarah di-apply</h2></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Scenario</th><th class="r">Amaun</th><th>Tarikh</th><th></th></tr></thead><tbody>
+          ${applied.map((s) => `<tr><td><b>${esc(s.name)}</b>${s.notes ? `<div class="muted small">${esc(s.notes)}</div>` : ''}</td><td class="r">${amt(s.amount)}</td><td class="small">${fmtDate(s.applied_at?.slice(0, 10))}</td>
+            <td class="r"><button class="btn ghost sm" data-view-snap="${s.id}">Lihat</button></td></tr>`).join('')}
+        </tbody></table></div></div>` : ''}`;
+    $('#addScenario').onclick = () => scenarioDialog();
+    $$('[data-apply]', v).forEach((b) => (b.onclick = () => applyScenario(S.whatIfScenarios.find((s) => s.id === b.dataset.apply))));
+    $$('[data-discard]', v).forEach((b) => (b.onclick = async () => { if (!confirm('Buang scenario draf ini?')) return; await q(sb.from('what_if_scenarios').delete().eq('id', b.dataset.discard)); await reload(); }));
+    $$('[data-view-snap]', v).forEach((b) => (b.onclick = () => snapshotDialog(S.whatIfScenarios.find((s) => s.id === b.dataset.viewSnap))));
+  }
+
+  function scenarioCard(s, inc) {
+    const sp = split();
+    const sim = simulateWhatIf(num(s.amount));
+    const komitmenPctNew = inc ? round2(sim.komitmenNew / inc * 100) : 0;
+    const investPctNew = inc ? round2(sim.investNew / inc * 100) : 0;
+    return `<div class="card">
+      <div class="card-h"><h2>${esc(s.name)}</h2><span class="muted small">+${rm(s.amount)}/bulan</span></div>
+      ${s.notes ? `<p class="muted small">${esc(s.notes)}</p>` : ''}
+      ${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(s.amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item invest dengan urutan potong dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
+      <div class="grid g2">
+        <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(sim.komitmenOld)} → <b>${amt(sim.komitmenNew)}</b></span></div><div class="small muted">sasaran ${sp.komitmen}% · jadi ${komitmenPctNew}% sebenar</div></div>
+        <div class="bucket"><div class="row"><b class="grow">Invest</b><span>${amt(sim.investOld)} → <b class="${sim.shortfall > 0 ? 'bad' : ''}">${amt(sim.investNew)}</b></span></div><div class="small muted">sasaran ${sp.invest}% · jadi ${investPctNew}% sebenar</div></div>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr><th>Item invest</th><th class="r">Sekarang</th><th class="r">Lepas</th><th class="r">Potong</th></tr></thead><tbody>
+        ${sim.cuts.map((c) => `<tr><td>${esc(c.item.name)}${c.cut > 0 && c.newAmount <= num(c.item.wi_floor) ? ' <span class="small warn">(kena had)</span>' : ''}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td><td class="r">${c.cut > 0 ? amt(c.cut) : '—'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Tiada item invest dengan urutan potong ditetapkan — isi dulu "Urutan potong What If" kat tab Item.</td></tr>'}
+        ${sim.untouched.length ? `<tr><td colspan="4" class="muted small">Tak disentuh (tiada urutan potong): ${sim.untouched.map((i) => esc(i.name)).join(', ')}</td></tr>` : ''}
+      </tbody></table></div>
+      <div class="row" style="margin-top:12px"><button class="btn ghost sm" data-discard="${s.id}">Buang</button><button class="btn primary sm" data-apply="${s.id}" ${sim.shortfall > 0 ? 'disabled' : ''}>Apply — jadikan sebenar</button></div>
+    </div>`;
+  }
+
+  function scenarioDialog() {
+    dialog(`<h2>Scenario What If baharu</h2>
+      <label>Nama<input name="name" required maxlength="80" placeholder="cth Naik taraf Takaful"></label>
+      <label>Tambahan komitmen bulanan (RM)<input name="amount" type="number" step="0.01" min="0" required></label>
+      <label>Nota<input name="notes" maxlength="200" placeholder="cth 173 → 173+162"></label>`, async (fd) => {
+      await q(sb.from('what_if_scenarios').insert({ name: fd.get('name').trim(), amount: Number(fd.get('amount')), notes: fd.get('notes') || null }));
+      await reload(); toast('Scenario dicipta.');
+    });
+  }
+
+  async function applyScenario(s) {
+    const sim = simulateWhatIf(num(s.amount));
+    if (sim.shortfall > 0) return toast('Invest tak cukup untuk tampung scenario ini.', true);
+    if (!confirm(`Apply "${s.name}"? Ini akan cipta item Komitmen baharu ${rm(s.amount)} dan kurangkan ${sim.cuts.filter((c) => c.cut > 0).length} item Invest. Boleh edit manual lepas ni, tapi tiada auto-reverse.`)) return;
+    const newItem = await q(sb.from('items').insert({ name: s.name, amount: num(s.amount), bucket: 'komitmen', paid_by: 'self', active: true, notes: s.notes || 'Dari What If', sort: (S.items.at(-1)?.sort || 0) + 1 }).select().single());
+    await Promise.all(sim.cuts.filter((c) => c.cut > 0).map((c) => q(sb.from('items').update({ amount: c.newAmount }).eq('id', c.item.id))));
+    await q(sb.from('what_if_scenarios').update({
+      status: 'applied', applied_at: new Date().toISOString(), item_id: newItem.id,
+      snapshot: { amount: num(s.amount), komitmenOld: sim.komitmenOld, komitmenNew: sim.komitmenNew, investOld: sim.investOld, investNew: sim.investNew,
+        cuts: sim.cuts.map((c) => ({ name: c.item.name, oldAmount: c.oldAmount, newAmount: c.newAmount, cut: c.cut })) },
+    }).eq('id', s.id));
+    await reload(); toast('Scenario di-apply.');
+  }
+
+  function snapshotDialog(s) {
+    const snap = s.snapshot || {};
+    dialog(`<h2>${esc(s.name)}</h2>
+      <p class="muted small">Di-apply ${fmtDate(s.applied_at?.slice(0, 10))} · +${rm(s.amount)}/bulan</p>
+      ${s.notes ? `<p class="small">${esc(s.notes)}</p>` : ''}
+      <div class="grid g2">
+        <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(snap.komitmenOld)} → <b>${amt(snap.komitmenNew)}</b></span></div></div>
+        <div class="bucket"><div class="row"><b class="grow">Invest</b><span>${amt(snap.investOld)} → <b>${amt(snap.investNew)}</b></span></div></div>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Sebelum</th><th class="r">Lepas</th></tr></thead><tbody>
+        ${(snap.cuts || []).filter((c) => c.cut > 0).map((c) => `<tr><td>${esc(c.name)}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Tiada potongan direkod.</td></tr>'}
+      </tbody></table></div>`, () => false);
   }
 
   // ================= PINJAMAN =================
