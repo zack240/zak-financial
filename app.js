@@ -846,9 +846,25 @@
     const inc = income();
     const drafts = S.whatIfScenarios.filter((s) => s.status === 'draft');
     const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
+    const inv = S.items.filter((i) => i.bucket === 'invest' && i.active);
+    const ranked = inv.filter((i) => i.wi_priority != null).sort((a, b) => a.wi_priority - b.wi_priority || a.sort - b.sort);
+    const untouched = inv.filter((i) => i.wi_priority == null);
+    const wiRow = (i, idx, inList) => `<tr>
+        <td><b>${esc(i.name)}</b></td><td class="r">${amt(i.amount)}</td>
+        <td><input type="number" step="0.01" min="0" max="${num(i.amount)}" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px"></td>
+        <td class="r">${inList
+          ? `<button class="btn ghost sm" data-wi-up="${i.id}" title="Naik" ${idx === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-wi-down="${i.id}" title="Turun" ${idx === ranked.length - 1 ? 'disabled' : ''}>↓</button><button class="btn ghost sm" data-wi-remove="${i.id}">Buang</button>`
+          : `<button class="btn ghost sm" data-wi-add="${i.id}">+ Senarai</button>`}</td></tr>`;
     v.innerHTML = `<div class="card">
         <div class="card-h"><h2>What If</h2><button class="btn primary sm" id="addScenario">＋ Scenario</button></div>
         <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja</b>. Self Reward tak disentuh.</p>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Urutan potong Invest</h2><span class="muted small">Atas = dipotong dulu</span></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Amaun</th><th>Had minimum (RM)</th><th></th></tr></thead><tbody>
+          ${ranked.map((i, idx) => wiRow(i, idx, true)).join('') || '<tr><td colspan="4" class="muted">Tiada item dalam senarai lagi.</td></tr>'}
+          ${untouched.length ? `<tr><td colspan="4" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, 0, false)).join('')}` : ''}
+        </tbody></table></div>
       </div>
       ${drafts.length ? drafts.map((s) => scenarioCard(s, inc)).join('') : '<div class="card muted">Tiada scenario draf. Cipta satu untuk mula simulasi.</div>'}
       ${applied.length ? `<div class="card"><div class="card-h"><h2>Sejarah di-apply</h2></div>
@@ -857,9 +873,36 @@
             <td class="r"><button class="btn ghost sm" data-view-snap="${s.id}">Lihat</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}`;
     $('#addScenario').onclick = () => scenarioDialog();
+    $$('[data-wi-up]', v).forEach((b) => (b.onclick = () => moveWiPriority(b.dataset.wiUp, -1, ranked)));
+    $$('[data-wi-down]', v).forEach((b) => (b.onclick = () => moveWiPriority(b.dataset.wiDown, 1, ranked)));
+    $$('[data-wi-add]', v).forEach((b) => (b.onclick = () => addToWiPriority(b.dataset.wiAdd)));
+    $$('[data-wi-remove]', v).forEach((b) => (b.onclick = () => removeFromWiPriority(b.dataset.wiRemove)));
+    $$('[data-wi-floor]', v).forEach((inp) => (inp.onchange = () => q(sb.from('items').update({ wi_floor: Number(inp.value) || 0 }).eq('id', inp.dataset.wiFloor)).then(reload)));
     $$('[data-apply]', v).forEach((b) => (b.onclick = () => applyScenario(S.whatIfScenarios.find((s) => s.id === b.dataset.apply))));
     $$('[data-discard]', v).forEach((b) => (b.onclick = async () => { if (!confirm('Buang scenario draf ini?')) return; await q(sb.from('what_if_scenarios').delete().eq('id', b.dataset.discard)); await reload(); }));
     $$('[data-view-snap]', v).forEach((b) => (b.onclick = () => snapshotDialog(S.whatIfScenarios.find((s) => s.id === b.dataset.viewSnap))));
+  }
+
+  // susun semula urutan potong: tukar wi_priority dengan jiran dalam senarai yang nampak
+  async function moveWiPriority(id, dir, ranked) {
+    const i = ranked.findIndex((x) => x.id === id), other = ranked[i + dir];
+    if (i < 0 || !other) return;
+    await Promise.all([
+      q(sb.from('items').update({ wi_priority: other.wi_priority }).eq('id', id)),
+      q(sb.from('items').update({ wi_priority: ranked[i].wi_priority }).eq('id', other.id)),
+    ]);
+    await reload();
+  }
+
+  async function addToWiPriority(id) {
+    const max = Math.max(0, ...S.items.filter((x) => x.bucket === 'invest' && x.wi_priority != null).map((x) => x.wi_priority));
+    await q(sb.from('items').update({ wi_priority: max + 1 }).eq('id', id));
+    await reload();
+  }
+
+  async function removeFromWiPriority(id) {
+    await q(sb.from('items').update({ wi_priority: null }).eq('id', id));
+    await reload();
   }
 
   function scenarioCard(s, inc) {
