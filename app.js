@@ -847,10 +847,11 @@
     const drafts = S.whatIfScenarios.filter((s) => s.status === 'draft');
     const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
     const inv = S.items.filter((i) => i.bucket === 'invest' && i.active);
+    const investTotal = round2(inv.reduce((s, i) => s + num(i.amount), 0));
     const ranked = inv.filter((i) => i.wi_priority != null).sort((a, b) => a.wi_priority - b.wi_priority || a.sort - b.sort);
     const untouched = inv.filter((i) => i.wi_priority == null);
     const wiRow = (i, idx, inList) => `<tr>
-        <td><b>${esc(i.name)}</b></td><td class="r">${amt(i.amount)}</td>
+        <td><b>${esc(i.name)}</b></td><td class="r">${amt(i.amount)}</td><td class="r muted small">${investTotal ? round2(num(i.amount) / investTotal * 100) : 0}%</td>
         <td><input type="number" step="0.01" min="0" max="${num(i.amount)}" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px"></td>
         <td class="r">${inList
           ? `<button class="btn ghost sm" data-wi-up="${i.id}" title="Naik" ${idx === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-wi-down="${i.id}" title="Turun" ${idx === ranked.length - 1 ? 'disabled' : ''}>↓</button><button class="btn ghost sm" data-wi-remove="${i.id}">Buang</button>`
@@ -861,9 +862,9 @@
       </div>
       <div class="card">
         <div class="card-h"><h2>Urutan potong Invest</h2><span class="muted small">Atas = dipotong dulu</span></div>
-        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Amaun</th><th>Had minimum (RM)</th><th></th></tr></thead><tbody>
-          ${ranked.map((i, idx) => wiRow(i, idx, true)).join('') || '<tr><td colspan="4" class="muted">Tiada item dalam senarai lagi.</td></tr>'}
-          ${untouched.length ? `<tr><td colspan="4" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, 0, false)).join('')}` : ''}
+        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Amaun</th><th class="r">% drpd Invest (${amt(investTotal)})</th><th>Had minimum (RM)</th><th></th></tr></thead><tbody>
+          ${ranked.map((i, idx) => wiRow(i, idx, true)).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai lagi.</td></tr>'}
+          ${untouched.length ? `<tr><td colspan="5" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, 0, false)).join('')}` : ''}
         </tbody></table></div>
       </div>
       ${drafts.length ? drafts.map((s) => scenarioCard(s, inc)).join('') : '<div class="card muted">Tiada scenario draf. Cipta satu untuk mula simulasi.</div>'}
