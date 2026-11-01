@@ -32,7 +32,7 @@
 
   const S = {
     settings: {}, accounts: [], items: [], periods: [], entries: [], transfers: [], loans: [], payments: [], payslips: [], goals: [], whatIfScenarios: [],
-    view: 'ringkasan', periodId: null, matrix: true, // Rekod buka dalam Jadual penuh
+    view: 'ringkasan', periodId: null, matrix: true, wiCalcAmount: 0, // Rekod buka dalam Jadual penuh
   };
 
   // ---------- toast ----------
@@ -860,7 +860,6 @@
   }
 
   function renderWhatIf(v) {
-    const inc = income();
     const drafts = S.whatIfScenarios.filter((s) => s.status === 'draft');
     const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
     const inv = S.items.filter((i) => i.bucket === 'invest' && i.active);
@@ -882,13 +881,30 @@
           ${untouched.length ? `<tr><td colspan="5" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, false)).join('')}` : ''}
         </tbody></table></div>
       </div>
-      ${drafts.length ? drafts.map((s) => scenarioCard(s, inc)).join('') : '<div class="card muted">Tiada scenario draf. Cipta satu untuk mula simulasi.</div>'}
+      <div class="card">
+        <div class="card-h"><h2>Kalkulator pantas</h2><span class="muted small">Cuba-cuba amaun, tak disimpan</span></div>
+        <label>Tambahan komitmen bulanan (RM)<input id="wiCalcAmount" type="number" step="0.01" min="0" value="${S.wiCalcAmount ? num(S.wiCalcAmount) : ''}" placeholder="cth 162"></label>
+        <div id="wiCalcOut"></div>
+      </div>
+      ${drafts.length ? drafts.map((s) => scenarioCard(s)).join('') : '<div class="card muted">Tiada scenario draf. Cipta satu untuk mula simulasi.</div>'}
       ${applied.length ? `<div class="card"><div class="card-h"><h2>Sejarah di-apply</h2></div>
         <div class="tbl-wrap"><table><thead><tr><th>Scenario</th><th class="r">Amaun</th><th>Tarikh</th><th></th></tr></thead><tbody>
           ${applied.map((s) => `<tr><td><b>${esc(s.name)}</b>${s.notes ? `<div class="muted small">${esc(s.notes)}</div>` : ''}</td><td class="r">${amt(s.amount)}</td><td class="small">${fmtDate(s.applied_at?.slice(0, 10))}</td>
             <td class="r"><button class="btn ghost sm" data-view-snap="${s.id}">Lihat</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}`;
     $('#addScenario').onclick = () => scenarioDialog();
+    const calcInput = $('#wiCalcAmount', v), calcOut = $('#wiCalcOut', v);
+    const paintCalc = () => {
+      const amount = Number(calcInput.value) || 0;
+      S.wiCalcAmount = amount;
+      calcOut.innerHTML = amount > 0
+        ? simBreakdownHtml(simulateWhatIf(amount), amount) + `<div class="row" style="margin-top:12px"><button class="btn primary sm" id="wiCalcSave">Simpan sebagai Scenario</button></div>`
+        : '<p class="muted small">Masukkan amaun untuk tengok simulasi.</p>';
+      const saveBtn = $('#wiCalcSave', v);
+      if (saveBtn) saveBtn.onclick = () => scenarioDialog({ amount });
+    };
+    calcInput.oninput = paintCalc;
+    paintCalc();
     $$('[data-wi-add]', v).forEach((b) => (b.onclick = () => addToWiPriority(b.dataset.wiAdd)));
     $$('[data-wi-remove]', v).forEach((b) => (b.onclick = () => removeFromWiPriority(b.dataset.wiRemove)));
     $$('[data-wi-floor]', v).forEach((inp) => (inp.onchange = () => q(sb.from('items').update({ wi_floor: Number(inp.value) || 0 }).eq('id', inp.dataset.wiFloor)).then(reload)));
@@ -908,15 +924,12 @@
     await reload();
   }
 
-  function scenarioCard(s, inc) {
-    const sp = split();
-    const sim = simulateWhatIf(num(s.amount));
+  // bahagian paparan dikongsi antara scenario tersimpan & kalkulator pantas
+  function simBreakdownHtml(sim, amount) {
+    const sp = split(), inc = income();
     const komitmenPctNew = inc ? round2(sim.komitmenNew / inc * 100) : 0;
     const investPctNew = inc ? round2(sim.investNew / inc * 100) : 0;
-    return `<div class="card">
-      <div class="card-h"><h2>${esc(s.name)}</h2><span class="muted small">+${rm(s.amount)}/bulan</span></div>
-      ${s.notes ? `<p class="muted small">${esc(s.notes)}</p>` : ''}
-      ${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(s.amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item dalam senarai What If dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
+    return `${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item dalam senarai What If dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
       <div class="grid g2">
         <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(sim.komitmenOld)} → <b>${amt(sim.komitmenNew)}</b></span></div><div class="small muted">sasaran ${sp.komitmen}% · jadi ${komitmenPctNew}% sebenar</div></div>
         <div class="bucket"><div class="row"><b class="grow">Invest</b><span>${amt(sim.investOld)} → <b class="${sim.shortfall > 0 ? 'bad' : ''}">${amt(sim.investNew)}</b></span></div><div class="small muted">sasaran ${sp.invest}% · jadi ${investPctNew}% sebenar</div></div>
@@ -924,15 +937,23 @@
       <div class="tbl-wrap"><table><thead><tr><th>Item invest</th><th class="r">Sekarang</th><th class="r">Lepas</th><th class="r">Potong</th><th class="r">% drpd Invest baharu</th></tr></thead><tbody>
         ${sim.cuts.map((c) => `<tr><td>${esc(c.item.name)}${c.cut > 0 && c.newAmount <= num(c.item.wi_floor) ? ' <span class="small warn">(kena had)</span>' : ''}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td><td class="r">${c.cut > 0 ? amt(c.cut) : '—'}</td><td class="r">${sim.investNew ? round2(c.newAmount / sim.investNew * 100) : 0}%</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai What If — tambah dulu kat panel "Item Invest boleh dipotong" di atas.</td></tr>'}
         ${sim.untouched.map((i) => `<tr><td>${esc(i.name)} <span class="small muted">(tak disentuh)</span></td><td class="r">${amt(i.amount)}</td><td class="r">${amt(i.amount)}</td><td class="r">—</td><td class="r">${sim.investNew ? round2(num(i.amount) / sim.investNew * 100) : 0}%</td></tr>`).join('')}
-      </tbody></table></div>
+      </tbody></table></div>`;
+  }
+
+  function scenarioCard(s) {
+    const sim = simulateWhatIf(num(s.amount));
+    return `<div class="card">
+      <div class="card-h"><h2>${esc(s.name)}</h2><span class="muted small">+${rm(s.amount)}/bulan</span></div>
+      ${s.notes ? `<p class="muted small">${esc(s.notes)}</p>` : ''}
+      ${simBreakdownHtml(sim, num(s.amount))}
       <div class="row" style="margin-top:12px"><button class="btn ghost sm" data-discard="${s.id}">Buang</button><button class="btn primary sm" data-apply="${s.id}" ${sim.shortfall > 0 ? 'disabled' : ''}>Apply — jadikan sebenar</button></div>
     </div>`;
   }
 
-  function scenarioDialog() {
+  function scenarioDialog(prefill = {}) {
     dialog(`<h2>Scenario What If baharu</h2>
       <label>Nama<input name="name" required maxlength="80" placeholder="cth Naik taraf Takaful"></label>
-      <label>Tambahan komitmen bulanan (RM)<input name="amount" type="number" step="0.01" min="0" required></label>
+      <label>Tambahan komitmen bulanan (RM)<input name="amount" type="number" step="0.01" min="0" required value="${prefill.amount ?? ''}"></label>
       <label>Nota<input name="notes" maxlength="200" placeholder="cth 173 → 173+162"></label>`, async (fd) => {
       await q(sb.from('what_if_scenarios').insert({ name: fd.get('name').trim(), amount: Number(fd.get('amount')), notes: fd.get('notes') || null }));
       await reload(); toast('Scenario dicipta.');
