@@ -801,7 +801,7 @@
       <div class="grid g2"><label>Amaun (RM)<input name="amount" type="number" step="0.01" min="0" value="${num(i.amount)}" required></label>
         <label>Kategori<select name="bucket">${Object.entries(BUCKETS).map(([k, l]) => `<option value="${k}" ${i.bucket === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
       <label>Jenis (untuk Invest)<select name="kind"><option value="">—</option>${Object.entries(KINDS).map(([k, l]) => `<option value="${k}" ${i.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="grid g2"><label>Urutan potong What If (untuk Invest)<input name="wi_priority" type="number" min="1" value="${i.wi_priority ?? ''}"><span class="muted small">1 = dipotong dulu. Kosong = tak disentuh oleh What If</span></label>
+      <div class="grid g2"><label>Dalam senarai What If (untuk Invest)<input name="wi_priority" type="number" min="1" value="${i.wi_priority ?? ''}"><span class="muted small">Isi mana-mana nombor = boleh dipotong (berkadar ikut %). Kosong = tak disentuh oleh What If</span></label>
         <label>Had minimum What If (RM)<input name="wi_floor" type="number" step="0.01" min="0" value="${num(i.wi_floor)}"><span class="muted small">Tak boleh dipotong bawah amaun ini</span></label></div>
       <div class="grid g2"><label>Akaun<select name="account_id">${optAccounts(i.account_id)}</select></label>
         <label>Bayar oleh<select name="paid_by"><option value="self" ${i.paid_by === 'self' ? 'selected' : ''}>Sendiri</option><option value="company" ${i.paid_by === 'company' ? 'selected' : ''}>Company</option></select></label></div>
@@ -821,25 +821,42 @@
   }
 
   // ================= WHAT IF =================
-  // Simulasi komitmen baharu: Komitmen naik, Invest kena potong ikut wi_priority (1 = dulu), Self Reward tak disentuh.
+  // Simulasi komitmen baharu: Komitmen naik, Invest kena potong, Self Reward tak disentuh.
+  // Item dalam senarai (wi_priority bukan null) dipotong secara BERKADAR (proportional) ikut % amaun asal
+  // masing-masing — bukan habiskan satu dulu baru pindah — supaya tiada item jatuh ke 0% melainkan terpaksa.
+  // wi_floor tetap had keras: item yang kena had "dikunci" kat floor dia, baki potongan diagih semula
+  // secara berkadar antara item yang belum kena had (water-filling), ulang sampai stabil.
   function simulateWhatIf(amount) {
     const items = activeSelfItems();
-    const inv = items.filter((i) => i.bucket === 'invest' && i.wi_priority != null).sort((a, b) => a.wi_priority - b.wi_priority || a.sort - b.sort);
-    let remaining = round2(amount);
-    const cuts = inv.map((i) => {
-      const cuttable = Math.max(0, round2(num(i.amount) - num(i.wi_floor)));
-      const take = Math.min(cuttable, remaining);
-      remaining = round2(remaining - take);
-      return { item: i, oldAmount: num(i.amount), newAmount: round2(num(i.amount) - take), cut: take };
-    });
-    const shortfall = Math.max(0, remaining);
-    const investCut = round2(amount - shortfall);
+    const inv = items.filter((i) => i.bucket === 'invest');
+    const ranked = inv.filter((i) => i.wi_priority != null);
+    const untouched = inv.filter((i) => i.wi_priority == null);
     const komitmenOld = round2(items.filter((i) => i.bucket === 'komitmen').reduce((s, i) => s + num(i.amount), 0));
-    const investOld = round2(items.filter((i) => i.bucket === 'invest').reduce((s, i) => s + num(i.amount), 0));
-    return {
-      cuts, shortfall, komitmenOld, komitmenNew: round2(komitmenOld + amount), investOld, investNew: round2(investOld - investCut),
-      untouched: items.filter((i) => i.bucket === 'invest' && i.wi_priority == null),
-    };
+    const investOld = round2(inv.reduce((s, i) => s + num(i.amount), 0));
+    const rankedOld = round2(ranked.reduce((s, i) => s + num(i.amount), 0));
+    const rankedFloorTotal = round2(ranked.reduce((s, i) => s + num(i.wi_floor), 0));
+    const rankedTarget = round2(rankedOld - amount);                       // jumlah pool ranked yang sepatutnya lepas potong
+    const shortfall = Math.max(0, round2(rankedFloorTotal - rankedTarget)); // tak dapat dipotong sebanyak ni tanpa langgar floor
+    const feasibleTarget = Math.max(rankedTarget, rankedFloorTotal);
+
+    const pool = ranked.map((i) => ({ item: i, w: num(i.amount), floor: num(i.wi_floor), clamped: false, newAmount: num(i.amount) }));
+    for (let guard = pool.length + 1; guard > 0; guard--) {
+      const clampedSum = round2(pool.filter((p) => p.clamped).reduce((s, p) => s + p.floor, 0));
+      const free = pool.filter((p) => !p.clamped);
+      if (!free.length) break;
+      const freeTarget = round2(feasibleTarget - clampedSum);
+      const freeW = round2(free.reduce((s, p) => s + p.w, 0));
+      let newlyClamped = false;
+      free.forEach((p) => {
+        const na = freeW > 0 ? round2(p.w / freeW * freeTarget) : 0;
+        if (na < p.floor - 0.005) { p.clamped = true; p.newAmount = p.floor; newlyClamped = true; }
+        else p.newAmount = Math.max(na, p.floor);
+      });
+      if (!newlyClamped) break;
+    }
+    const cuts = pool.map((p) => ({ item: p.item, oldAmount: p.w, newAmount: p.newAmount, cut: round2(p.w - p.newAmount) }));
+    const investNew = round2(cuts.reduce((s, c) => s + c.newAmount, 0) + untouched.reduce((s, i) => s + num(i.amount), 0));
+    return { cuts, shortfall, komitmenOld, komitmenNew: round2(komitmenOld + amount), investOld, investNew, untouched };
   }
 
   function renderWhatIf(v) {
@@ -848,23 +865,21 @@
     const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
     const inv = S.items.filter((i) => i.bucket === 'invest' && i.active);
     const investTotal = round2(inv.reduce((s, i) => s + num(i.amount), 0));
-    const ranked = inv.filter((i) => i.wi_priority != null).sort((a, b) => a.wi_priority - b.wi_priority || a.sort - b.sort);
+    const ranked = inv.filter((i) => i.wi_priority != null).sort((a, b) => num(b.amount) - num(a.amount));
     const untouched = inv.filter((i) => i.wi_priority == null);
-    const wiRow = (i, idx, inList) => `<tr>
+    const wiRow = (i, inList) => `<tr>
         <td><b>${esc(i.name)}</b></td><td class="r">${amt(i.amount)}</td><td class="r muted small">${investTotal ? round2(num(i.amount) / investTotal * 100) : 0}%</td>
         <td><input type="number" step="0.01" min="0" max="${num(i.amount)}" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px"></td>
-        <td class="r">${inList
-          ? `<button class="btn ghost sm" data-wi-up="${i.id}" title="Naik" ${idx === 0 ? 'disabled' : ''}>↑</button><button class="btn ghost sm" data-wi-down="${i.id}" title="Turun" ${idx === ranked.length - 1 ? 'disabled' : ''}>↓</button><button class="btn ghost sm" data-wi-remove="${i.id}">Buang</button>`
-          : `<button class="btn ghost sm" data-wi-add="${i.id}">+ Senarai</button>`}</td></tr>`;
+        <td class="r">${inList ? `<button class="btn ghost sm" data-wi-remove="${i.id}">Buang</button>` : `<button class="btn ghost sm" data-wi-add="${i.id}">+ Senarai</button>`}</td></tr>`;
     v.innerHTML = `<div class="card">
         <div class="card-h"><h2>What If</h2><button class="btn primary sm" id="addScenario">＋ Scenario</button></div>
         <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja</b>. Self Reward tak disentuh.</p>
       </div>
       <div class="card">
-        <div class="card-h"><h2>Urutan potong Invest</h2><span class="muted small">Atas = dipotong dulu</span></div>
+        <div class="card-h"><h2>Item Invest boleh dipotong</h2><span class="muted small">Dipotong secara berkadar (proportional) ikut % di atas, bukan satu-satu</span></div>
         <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Amaun</th><th class="r">% drpd Invest (${amt(investTotal)})</th><th>Had minimum (RM)</th><th></th></tr></thead><tbody>
-          ${ranked.map((i, idx) => wiRow(i, idx, true)).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai lagi.</td></tr>'}
-          ${untouched.length ? `<tr><td colspan="5" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, 0, false)).join('')}` : ''}
+          ${ranked.map((i) => wiRow(i, true)).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai lagi.</td></tr>'}
+          ${untouched.length ? `<tr><td colspan="5" class="muted small" style="padding-top:12px">Belum dalam senarai (tak disentuh oleh What If):</td></tr>${untouched.map((i) => wiRow(i, false)).join('')}` : ''}
         </tbody></table></div>
       </div>
       ${drafts.length ? drafts.map((s) => scenarioCard(s, inc)).join('') : '<div class="card muted">Tiada scenario draf. Cipta satu untuk mula simulasi.</div>'}
@@ -874,25 +889,12 @@
             <td class="r"><button class="btn ghost sm" data-view-snap="${s.id}">Lihat</button></td></tr>`).join('')}
         </tbody></table></div></div>` : ''}`;
     $('#addScenario').onclick = () => scenarioDialog();
-    $$('[data-wi-up]', v).forEach((b) => (b.onclick = () => moveWiPriority(b.dataset.wiUp, -1, ranked)));
-    $$('[data-wi-down]', v).forEach((b) => (b.onclick = () => moveWiPriority(b.dataset.wiDown, 1, ranked)));
     $$('[data-wi-add]', v).forEach((b) => (b.onclick = () => addToWiPriority(b.dataset.wiAdd)));
     $$('[data-wi-remove]', v).forEach((b) => (b.onclick = () => removeFromWiPriority(b.dataset.wiRemove)));
     $$('[data-wi-floor]', v).forEach((inp) => (inp.onchange = () => q(sb.from('items').update({ wi_floor: Number(inp.value) || 0 }).eq('id', inp.dataset.wiFloor)).then(reload)));
     $$('[data-apply]', v).forEach((b) => (b.onclick = () => applyScenario(S.whatIfScenarios.find((s) => s.id === b.dataset.apply))));
     $$('[data-discard]', v).forEach((b) => (b.onclick = async () => { if (!confirm('Buang scenario draf ini?')) return; await q(sb.from('what_if_scenarios').delete().eq('id', b.dataset.discard)); await reload(); }));
     $$('[data-view-snap]', v).forEach((b) => (b.onclick = () => snapshotDialog(S.whatIfScenarios.find((s) => s.id === b.dataset.viewSnap))));
-  }
-
-  // susun semula urutan potong: tukar wi_priority dengan jiran dalam senarai yang nampak
-  async function moveWiPriority(id, dir, ranked) {
-    const i = ranked.findIndex((x) => x.id === id), other = ranked[i + dir];
-    if (i < 0 || !other) return;
-    await Promise.all([
-      q(sb.from('items').update({ wi_priority: other.wi_priority }).eq('id', id)),
-      q(sb.from('items').update({ wi_priority: ranked[i].wi_priority }).eq('id', other.id)),
-    ]);
-    await reload();
   }
 
   async function addToWiPriority(id) {
@@ -914,13 +916,13 @@
     return `<div class="card">
       <div class="card-h"><h2>${esc(s.name)}</h2><span class="muted small">+${rm(s.amount)}/bulan</span></div>
       ${s.notes ? `<p class="muted small">${esc(s.notes)}</p>` : ''}
-      ${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(s.amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item invest dengan urutan potong dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
+      ${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(s.amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item dalam senarai What If dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
       <div class="grid g2">
         <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(sim.komitmenOld)} → <b>${amt(sim.komitmenNew)}</b></span></div><div class="small muted">sasaran ${sp.komitmen}% · jadi ${komitmenPctNew}% sebenar</div></div>
         <div class="bucket"><div class="row"><b class="grow">Invest</b><span>${amt(sim.investOld)} → <b class="${sim.shortfall > 0 ? 'bad' : ''}">${amt(sim.investNew)}</b></span></div><div class="small muted">sasaran ${sp.invest}% · jadi ${investPctNew}% sebenar</div></div>
       </div>
       <div class="tbl-wrap"><table><thead><tr><th>Item invest</th><th class="r">Sekarang</th><th class="r">Lepas</th><th class="r">Potong</th><th class="r">% drpd Invest baharu</th></tr></thead><tbody>
-        ${sim.cuts.map((c) => `<tr><td>${esc(c.item.name)}${c.cut > 0 && c.newAmount <= num(c.item.wi_floor) ? ' <span class="small warn">(kena had)</span>' : ''}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td><td class="r">${c.cut > 0 ? amt(c.cut) : '—'}</td><td class="r">${sim.investNew ? round2(c.newAmount / sim.investNew * 100) : 0}%</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Tiada item invest dengan urutan potong ditetapkan — isi dulu "Urutan potong What If" kat tab Item.</td></tr>'}
+        ${sim.cuts.map((c) => `<tr><td>${esc(c.item.name)}${c.cut > 0 && c.newAmount <= num(c.item.wi_floor) ? ' <span class="small warn">(kena had)</span>' : ''}</td><td class="r">${amt(c.oldAmount)}</td><td class="r">${amt(c.newAmount)}</td><td class="r">${c.cut > 0 ? amt(c.cut) : '—'}</td><td class="r">${sim.investNew ? round2(c.newAmount / sim.investNew * 100) : 0}%</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Tiada item dalam senarai What If — tambah dulu kat panel "Item Invest boleh dipotong" di atas.</td></tr>'}
         ${sim.untouched.map((i) => `<tr><td>${esc(i.name)} <span class="small muted">(tak disentuh)</span></td><td class="r">${amt(i.amount)}</td><td class="r">${amt(i.amount)}</td><td class="r">—</td><td class="r">${sim.investNew ? round2(num(i.amount) / sim.investNew * 100) : 0}%</td></tr>`).join('')}
       </tbody></table></div>
       <div class="row" style="margin-top:12px"><button class="btn ghost sm" data-discard="${s.id}">Buang</button><button class="btn primary sm" data-apply="${s.id}" ${sim.shortfall > 0 ? 'disabled' : ''}>Apply — jadikan sebenar</button></div>
