@@ -1,27 +1,32 @@
 name: Keep Supabase alive
 
-# Supabase free-tier projects auto-pause after ~7 days with no API requests.
-# This hits the project's REST endpoint every 3 days to reset that idle timer.
-# Uses the same publishable key already committed in config.js (safe by design:
-# RLS blocks anon access to all tables, see config.js comment).
+# Supabase free-tier projects auto-pause when idle. A read of the REST root was
+# NOT enough (project paused 2026-11-23 even though this ping succeeded 22 Nov).
+# This now calls the keepalive_touch() RPC, which does a real DB WRITE (heartbeat
+# row), twice a day, independent of any PC being switched on.
+# Uses the publishable key already committed in config.js (anon can only execute
+# keepalive_touch; the heartbeat table has RLS on and no grants).
+# Fails (GitHub emails the repo owner) if the write doesn't return 2xx, which
+# usually means the project is paused: resume it in the Supabase dashboard, or
+# let the office PC's local script auto-restore it.
 
 on:
   schedule:
-    - cron: '0 4 */3 * *'
+    - cron: '17 1 * * *'
+    - cron: '17 13 * * *'
   workflow_dispatch: {}
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase REST endpoint
+      - name: Heartbeat write (keepalive_touch)
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "apikey: sb_publishable__aIhoXThzHqkJp3NLgWVaQ_-5VArfDp" \
-            "https://emfzvpiminajqvgunreb.supabase.co/rest/v1/")
-          echo "Supabase REST endpoint responded with HTTP $code"
-          # Any response (even 401/404) means the project is awake and reachable.
-          if [ "$code" = "000" ]; then
-            echo "No response at all — project may be paused or deleted."
-            exit 1
-          fi
+          for i in 1 2 3; do
+            code=$(curl -s -o /tmp/out -w "%{http_code}" -X POST               -H "apikey: sb_publishable__aIhoXThzHqkJp3NLgWVaQ_-5VArfDp"               -H "Authorization: Bearer sb_publishable__aIhoXThzHqkJp3NLgWVaQ_-5VArfDp"               -H "Content-Type: application/json" -d '{}'               "https://emfzvpiminajqvgunreb.supabase.co/rest/v1/rpc/keepalive_touch")
+            echo "Attempt $i: HTTP $code $(head -c 200 /tmp/out)"
+            case "$code" in 2*) exit 0;; esac
+            sleep 30
+          done
+          echo "::error::keepalive_touch failed, project may be paused"
+          exit 1
