@@ -221,6 +221,7 @@
     const pvNow = planVsReality(inc, S.payslips[0] && round2(num(S.payslips[0].net)) === round2(inc) ? S.payslips[0].month : null);
     v.innerHTML = `
       ${diff < 0 ? `<div class="alert bad"><b>Peruntukan melebihi gaji sebanyak ${amt(-diff)}.</b> Jumlah item aktif ${amt(total)} berbanding pendapatan ${amt(inc)}. Kurangkan item atau ambil dari baki bulan lepas.</div>` : ''}
+      <div class="card row payday-bar"><span class="grow"><b>Hari gaji?</b> <span class="muted small">Import slip PDF dulu, kemudian semak Pelan vs Realiti.${S.payslips[0] ? ` Slip terakhir: ${monthLabel(S.payslips[0].month)}.` : ''}</span></span><button class="btn primary sm" id="sumImportSlip">Import slip gaji (PDF)</button></div>
       <div class="grid g4">
         <div class="card kpi"><div class="lbl">Pendapatan bulanan</div><div class="val">${amt(inc)}</div><div class="sub">Gaji masuk ${esc(S.accounts.find((a) => /gaji/i.test(a.role || ''))?.code || '')}</div></div>
         <div class="card kpi"><div class="lbl">Jumlah peruntukan</div><div class="val">${amt(total)}</div><div class="sub">${items.length} item aktif</div></div>
@@ -278,6 +279,8 @@
       </div>`;
     $$('.bar > i', v).forEach((i) => { i.style.width = i.dataset.w + '%'; });
     $$('[data-advice-item]', v).forEach((b) => (b.onclick = () => itemDialog(null, JSON.parse(b.dataset.adviceItem))));
+    // pintasan: buka tab Gaji + pemilih fail dalam klik yang sama (pemilih fail perlu gerak isyarat pengguna)
+    $('#sumImportSlip', v).onclick = () => { $('#tabs button[data-view=gaji]').click(); $('#slipFile').click(); };
     if ($('#pvrAdjust', v)) $('#pvrAdjust', v).onclick = () => { if (confirm(`Laras Invest ke pelan ${rm(pvNow.investPlan)}?\n\n${pvNow.changes.map((r) => `${r.item.name}: ${rm(r.item.amount)} → ${rm(r.newAmount)}`).join('\n')}\n\nKomitmen & Self Reward kekal. Rekod bulan lepas tak berubah.`)) adjustInvestToPlan(pvNow); };
   }
 

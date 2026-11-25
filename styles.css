@@ -247,3 +247,4 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 .wi-pills { align-items: center; margin-bottom: 4px; }
 .wi-pills label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 14px; }
 @media (max-width: 560px) { .wi-pills { flex-wrap: wrap; overflow: visible; margin-left: 0; margin-right: 0; padding: 0; } }
+.payday-bar { align-items: center; gap: 12px; flex-wrap: wrap; }
