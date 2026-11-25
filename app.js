@@ -408,7 +408,17 @@
     const paid = its.reduce((s, i) => { const e = entOf(i.id); return e?.status === 'done' ? s + num(e.amount ?? i.amount) : s; }, 0);
     const trs = S.transfers.filter((t) => t.period_id === p.id);
 
-    const groups = [...S.accounts.map((a) => ({ a, list: its.filter((i) => i.account_id === a.id) })), { a: null, list: its.filter((i) => !i.account_id) }].filter((g) => g.list.length);
+    // item company (cth Rumah/staff house) dipotong terus dari gaji kasar → segmen sendiri, bukan bawah akaun bank
+    const isCo = (i) => i.paid_by === 'company';
+    const own = its.filter((i) => !isCo(i));
+    const slip = slipOf(p.month);
+    const groups = [...S.accounts.map((a) => ({ a, list: own.filter((i) => i.account_id === a.id) })), { a: null, list: own.filter((i) => !i.account_id) },
+      { co: true, list: its.filter(isCo) }].filter((g) => g.list.length);
+    const segHead = (g) => g.co
+      ? `<h3><span><span class="dot"></span>Potong gaji · auto dari gaji kasar</span><span class="muted small">${amt(g.list.reduce((s, i) => s + num(entOf(i.id)?.amount ?? i.amount), 0))}</span></h3>
+         <p class="muted small" style="margin:0 0 4px">${slip ? `Kasar ${rm(slip.gross)} → bersih ${rm(slip.net)}. ` : ''}Dah ditolak sebelum gaji masuk bank, jadi tak dikira dalam bajet gaji bersih.</p>`
+      : `<h3><span><span class="dot"></span>${esc(g.a ? `${g.a.code} · ${g.a.role || ''}` : 'Tiada akaun')}</span>
+              <span class="muted small">${amt(g.list.reduce((s, i) => s + num(i.amount), 0))}</span></h3>`;
 
     body.innerHTML = `
       <div class="grid g4">
@@ -421,10 +431,9 @@
         <div class="card-h"><h2>${monthLabel(p.month)}</h2><button class="btn sm" id="editPeriod">Edit bulan</button></div>
         ${p.notes ? `<p class="muted small">${esc(p.notes)}</p>` : ''}
       </div>
-        ${groups.map(({ a, list }) => `
-          <div class="card seg" style="--acct:${esc(a?.color || '#999999')}">
-            <h3><span><span class="dot"></span>${esc(a ? `${a.code} · ${a.role || ''}` : 'Tiada akaun')}</span>
-              <span class="muted small">${amt(list.filter((i) => i.paid_by === 'self').reduce((s, i) => s + num(i.amount), 0))}</span></h3>
+        ${groups.map((g) => { const { a, list } = g; return `
+          <div class="card seg${g.co ? ' seg-co' : ''}" style="--acct:${g.co ? '#6b7280' : esc(a?.color || '#999999')}">
+            ${segHead(g)}
             ${list.map((i) => {
               const e = entOf(i.id); const st = e?.status || 'pending';
               return `<div class="citem">
@@ -436,7 +445,7 @@
                 </div>
               </div>`;
             }).join('')}
-          </div>`).join('')}
+          </div>`; }).join('')}
       <div class="card">
         <div class="card-h"><h2>Pindahan gabung</h2><button class="btn sm" id="addTransfer">＋ Tambah</button></div>
         ${trs.length ? `<div class="tbl-wrap"><table><thead><tr><th>Akaun</th><th>Untuk</th><th class="r">Amaun</th><th></th></tr></thead><tbody>
