@@ -891,20 +891,34 @@
     const applied = S.whatIfScenarios.filter((s) => s.status === 'applied');
     const inv = S.items.filter((i) => i.bucket === 'invest' && i.active).sort((a, b) => num(b.amount) - num(a.amount));
     const investTotal = round2(inv.reduce((s, i) => s + num(i.amount), 0));
-    const al = allocateInvest(investTotal);
+    // Jumlah Invest sasaran: 'rule' = % Invest peraturan x gaji bersih, 'custom' = angka sendiri, lain = jumlah semasa
+    const ruleTotal = round2(income() * num(split().invest) / 100);
+    const tg = S.settings.invest_target || { mode: 'current' };
+    const target = tg.mode === 'rule' ? ruleTotal : tg.mode === 'custom' ? round2(num(tg.amount)) : investTotal;
+    const al = allocateInvest(target);
+    const tDiff = round2(target - investTotal);
     v.innerHTML = `<div class="card">
         <div class="card-h"><h2>What If</h2><button class="btn primary sm" id="addScenario">＋ Scenario</button></div>
         <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja ikut pemberat</b>. Self Reward tak disentuh.</p>
       </div>
       <div class="card">
         <div class="card-h"><h2>Item Invest</h2><button class="btn sm" id="wiRebalance" ${al.rows.some((r) => !r.locked && round2(r.newAmount) !== round2(num(r.item.amount))) ? '' : 'disabled'}>Agih semula ikut pemberat</button></div>
-        <p class="muted small">Klik kotak untuk set pemberat (klik kotak 1 sekali lagi = 0). Amaun = pemberat ÷ jumlah pemberat semua item (<b>${al.weightTotal}</b>) × jumlah Invest (${amt(investTotal)}). Pemberat 0 = tak diagih. Had minimum = perlindungan keras.</p>
+        <div class="wi-target">
+          <b>Jumlah Invest sasaran</b>
+          <div class="pills wi-pills">
+            <button type="button" class="pill ${tg.mode === 'rule' ? 'on' : ''}" data-wi-tmode="rule">Peraturan ${num(split().invest)}% · ${amt(ruleTotal)}</button>
+            <button type="button" class="pill ${tg.mode !== 'rule' && tg.mode !== 'custom' ? 'on' : ''}" data-wi-tmode="current">Semasa · ${amt(investTotal)}</button>
+            <label class="inline">Lain (RM)<input id="wiTargetCustom" type="number" step="0.01" min="0" value="${tg.mode === 'custom' ? round2(num(tg.amount)) : ''}" placeholder="${ruleTotal}" style="width:110px"></label>
+          </div>
+          <p class="muted small">${tg.mode === 'rule' ? `${num(split().invest)}% × gaji bersih ${rm(income())} (ikut Tetapan).` : ''} ${tDiff ? `Berbanding sekarang: <b class="${tDiff < 0 ? 'warn' : ''}">${tDiff > 0 ? '+' : '−'}${rm(Math.abs(tDiff))}</b> ${tDiff < 0 ? '(pindah ke Belum diagih)' : '(diambil dari Belum diagih)'}.` : 'Sama dengan jumlah semasa.'}</p>
+        </div>
+        <p class="muted small">Klik kotak untuk set pemberat (klik kotak 1 sekali lagi = 0). Amaun = pemberat ÷ jumlah pemberat semua item (<b>${al.weightTotal}</b>) × jumlah Invest sasaran (${amt(target)}). Pemberat 0 = tak diagih. Had minimum = perlindungan keras.</p>
         <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Pemberat</th><th class="r">Amaun sekarang</th><th class="r">Ikut pemberat</th><th class="r">%</th><th>Had minimum (RM)</th></tr></thead><tbody>
           ${al.rows.map((r) => { const i = r.item; const differs = round2(r.newAmount) !== round2(num(i.amount)); return `<tr><td><b>${esc(i.name)}</b></td>
             <td><div class="wbox" role="group" aria-label="Pemberat ${esc(i.name)}: ${r.weight}/5">${[1, 2, 3, 4, 5].map((k) => `<button type="button" class="wb ${k <= r.weight ? 'on' : ''}" data-wi-w="${i.id}" data-k="${k}" data-cur="${r.weight}" title="${k}/5" aria-pressed="${k <= r.weight}">${k}</button>`).join('')}<span class="wnum">${r.weight}/5</span></div></td>
             <td class="r">${amt(i.amount)}</td>
             <td class="r ${differs ? '' : 'muted'}">${r.locked ? '<span class="muted small">dikunci</span>' : `${amt(r.newAmount)}${r.floored ? ' <span class="small warn">(had)</span>' : ''}`}</td>
-            <td class="r muted small">${investTotal ? round2(r.newAmount / investTotal * 100) : 0}%</td>
+            <td class="r muted small">${target ? round2(r.newAmount / target * 100) : 0}%</td>
             <td><input type="number" step="0.01" min="0" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px" ${r.locked ? 'disabled' : ''}></td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">Tiada item invest aktif.</td></tr>'}
         </tbody></table></div>
         ${al.shortfall > 0 ? `<div class="alert bad">Had minimum melebihi baki Invest — kurang ${amt(al.shortfall)}.</div>` : ''}
@@ -937,10 +951,13 @@
     $$('[data-wi-floor]', v).forEach((inp) => (inp.onchange = () => q(sb.from('items').update({ wi_floor: Number(inp.value) || 0 }).eq('id', inp.dataset.wiFloor)).then(reload)));
     $$('[data-wi-w]', v).forEach((b) => (b.onclick = () => { const k = Number(b.dataset.k), cur = Number(b.dataset.cur); const w = k === 1 && cur === 1 ? 0 : k;
       q(sb.from('items').update({ wi_weight: w }).eq('id', b.dataset.wiW)).then(reload); }));
+    const saveTarget = async (val) => { await q(sb.from('settings').upsert({ key: 'invest_target', value: val })); await reload(); };
+    $$('[data-wi-tmode]', v).forEach((b) => (b.onclick = () => saveTarget({ mode: b.dataset.wiTmode })));
+    $('#wiTargetCustom', v).onchange = (e) => { const n = Number(e.target.value); saveTarget(n > 0 ? { mode: 'custom', amount: round2(n) } : { mode: 'current' }); };
     $('#wiRebalance', v).onclick = async () => {
       const ch = al.rows.filter((r) => !r.locked && round2(r.newAmount) !== round2(num(r.item.amount)));
       if (al.shortfall > 0 || al.unallocated > 0) return toast('Betulkan pemberat / had minimum dulu.', true);
-      if (!confirm(`Agih semula Invest ikut pemberat?\n\n${ch.map((r) => `${r.item.name}: ${rm(r.item.amount)} → ${rm(r.newAmount)}`).join('\n')}\n\nJumlah Invest kekal ${rm(investTotal)}. Rekod bulan lepas tak berubah.`)) return;
+      if (!confirm(`Agih semula Invest ikut pemberat?\n\n${ch.map((r) => `${r.item.name}: ${rm(r.item.amount)} → ${rm(r.newAmount)}`).join('\n')}\n\nJumlah Invest: ${rm(investTotal)} → ${rm(target)}. Rekod bulan lepas tak berubah.`)) return;
       await setItemAmounts(ch.map((r) => ({ item: r.item, newAmount: r.newAmount })));
       await reload(); toast('Invest diagih semula ikut pemberat.');
     };
