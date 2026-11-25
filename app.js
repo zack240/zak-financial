@@ -829,8 +829,8 @@
   }
 
   // ================= WHAT IF =================
-  // Invest diagih ikut PEMBERAT 0-5 (wi_weight): amaun = pemberat / jumlah pemberat x (Invest - item dikunci).
-  // wi_locked = amaun tetap (cth Dana kecemasan), tak ikut pemberat & tak dipotong. wi_floor = had keras:
+  // Invest diagih ikut PEMBERAT 0-5 (wi_weight): amaun = pemberat item / jumlah pemberat SEMUA item x jumlah Invest.
+  // (wi_locked kekal dalam DB tapi tiada UI lagi — semua item ikut pemberat.) wi_floor = had keras:
   // item yang jatuh bawah had dikunci kat had, baki diagih semula ikut pemberat item lain (water-filling).
   function allocateInvest(total) {
     const inv = activeSelfItems().filter((i) => i.bucket === 'invest');
@@ -894,19 +894,18 @@
     const al = allocateInvest(investTotal);
     v.innerHTML = `<div class="card">
         <div class="card-h"><h2>What If</h2><button class="btn primary sm" id="addScenario">＋ Scenario</button></div>
-        <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja ikut pemberat</b>. Item dikunci & Self Reward tak disentuh.</p>
+        <p class="muted small">Simulasi komitmen baharu (cth naik taraf takaful, ansuran kereta) — diselesaikan dengan pembahagian semula <b>Invest sahaja ikut pemberat</b>. Self Reward tak disentuh.</p>
       </div>
       <div class="card">
         <div class="card-h"><h2>Item Invest</h2><button class="btn sm" id="wiRebalance" ${al.rows.some((r) => !r.locked && round2(r.newAmount) !== round2(num(r.item.amount))) ? '' : 'disabled'}>Agih semula ikut pemberat</button></div>
-        <p class="muted small">Amaun = pemberat ÷ jumlah pemberat (<b>${al.weightTotal}</b>) × baki Invest selepas item dikunci (${amt(al.poolTarget)}). Pemberat 0 = tak diagih. <b>Kunci</b> = amaun tetap, tak ikut pemberat & tak dipotong dalam What If. Had minimum = perlindungan keras.</p>
-        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Pemberat</th><th>Kunci</th><th class="r">Amaun sekarang</th><th class="r">Ikut pemberat</th><th class="r">%</th><th>Had minimum (RM)</th></tr></thead><tbody>
+        <p class="muted small">Klik kotak untuk set pemberat (klik kotak 1 sekali lagi = 0). Amaun = pemberat ÷ jumlah pemberat semua item (<b>${al.weightTotal}</b>) × jumlah Invest (${amt(investTotal)}). Pemberat 0 = tak diagih. Had minimum = perlindungan keras.</p>
+        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Pemberat</th><th class="r">Amaun sekarang</th><th class="r">Ikut pemberat</th><th class="r">%</th><th>Had minimum (RM)</th></tr></thead><tbody>
           ${al.rows.map((r) => { const i = r.item; const differs = round2(r.newAmount) !== round2(num(i.amount)); return `<tr><td><b>${esc(i.name)}</b></td>
-            <td><select data-wi-weight="${i.id}" ${r.locked ? 'disabled' : ''} aria-label="Pemberat ${esc(i.name)}">${[5, 4, 3, 2, 1, 0].map((w) => `<option value="${w}" ${num(i.wi_weight ?? 5) === w ? 'selected' : ''}>${w}/5</option>`).join('')}</select></td>
-            <td><input type="checkbox" data-wi-lock="${i.id}" ${r.locked ? 'checked' : ''} aria-label="Kunci ${esc(i.name)}"></td>
+            <td><div class="wbox" role="group" aria-label="Pemberat ${esc(i.name)}: ${r.weight}/5">${[1, 2, 3, 4, 5].map((k) => `<button type="button" class="wb ${k <= r.weight ? 'on' : ''}" data-wi-w="${i.id}" data-k="${k}" data-cur="${r.weight}" title="${k}/5" aria-pressed="${k <= r.weight}">${k}</button>`).join('')}<span class="wnum">${r.weight}/5</span></div></td>
             <td class="r">${amt(i.amount)}</td>
             <td class="r ${differs ? '' : 'muted'}">${r.locked ? '<span class="muted small">dikunci</span>' : `${amt(r.newAmount)}${r.floored ? ' <span class="small warn">(had)</span>' : ''}`}</td>
             <td class="r muted small">${investTotal ? round2(r.newAmount / investTotal * 100) : 0}%</td>
-            <td><input type="number" step="0.01" min="0" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px" ${r.locked ? 'disabled' : ''}></td></tr>`; }).join('') || '<tr><td colspan="7" class="muted">Tiada item invest aktif.</td></tr>'}
+            <td><input type="number" step="0.01" min="0" value="${num(i.wi_floor)}" data-wi-floor="${i.id}" style="width:90px" ${r.locked ? 'disabled' : ''}></td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">Tiada item invest aktif.</td></tr>'}
         </tbody></table></div>
         ${al.shortfall > 0 ? `<div class="alert bad">Had minimum melebihi baki Invest — kurang ${amt(al.shortfall)}.</div>` : ''}
         ${al.unallocated > 0 ? `<div class="alert warn">Semua pemberat 0 — ${amt(al.unallocated)} tak diagih.</div>` : ''}
@@ -936,8 +935,8 @@
     calcInput.oninput = paintCalc;
     paintCalc();
     $$('[data-wi-floor]', v).forEach((inp) => (inp.onchange = () => q(sb.from('items').update({ wi_floor: Number(inp.value) || 0 }).eq('id', inp.dataset.wiFloor)).then(reload)));
-    $$('[data-wi-weight]', v).forEach((sel) => (sel.onchange = () => q(sb.from('items').update({ wi_weight: Number(sel.value) }).eq('id', sel.dataset.wiWeight)).then(reload)));
-    $$('[data-wi-lock]', v).forEach((cb) => (cb.onchange = () => q(sb.from('items').update({ wi_locked: cb.checked }).eq('id', cb.dataset.wiLock)).then(reload)));
+    $$('[data-wi-w]', v).forEach((b) => (b.onclick = () => { const k = Number(b.dataset.k), cur = Number(b.dataset.cur); const w = k === 1 && cur === 1 ? 0 : k;
+      q(sb.from('items').update({ wi_weight: w }).eq('id', b.dataset.wiW)).then(reload); }));
     $('#wiRebalance', v).onclick = async () => {
       const ch = al.rows.filter((r) => !r.locked && round2(r.newAmount) !== round2(num(r.item.amount)));
       if (al.shortfall > 0 || al.unallocated > 0) return toast('Betulkan pemberat / had minimum dulu.', true);
@@ -955,7 +954,7 @@
     const sp = split(), inc = income();
     const komitmenPctNew = inc ? round2(sim.komitmenNew / inc * 100) : 0;
     const investPctNew = inc ? round2(sim.investNew / inc * 100) : 0;
-    return `${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item Invest dah kena had minimum (item dikunci tak dipotong). Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
+    return `${sim.shortfall > 0 ? `<div class="alert bad"><b>Invest tak cukup untuk tampung ${rm(amount)}.</b> Kurang ${amt(sim.shortfall)} lagi — semua item Invest dah kena had minimum. Self Reward tak disentuh ikut rule, jadi ni akan jadi defisit sebenar kalau diteruskan.</div>` : ''}
       <div class="grid g2">
         <div class="bucket"><div class="row"><b class="grow">Komitmen</b><span>${amt(sim.komitmenOld)} → <b>${amt(sim.komitmenNew)}</b></span></div><div class="small muted">sasaran ${sp.komitmen}% · jadi ${komitmenPctNew}% sebenar</div></div>
         <div class="bucket"><div class="row"><b class="grow">Invest</b><span>${amt(sim.investOld)} → <b class="${sim.shortfall > 0 ? 'bad' : ''}">${amt(sim.investNew)}</b></span></div><div class="small muted">sasaran ${sp.invest}% · jadi ${investPctNew}% sebenar</div></div>
