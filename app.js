@@ -153,6 +153,19 @@
   const acct = (id) => S.accounts.find((a) => a.id === id);
   const slipOf = (month) => S.payslips.find((s) => s.month === month);
   const activeSelfItems = () => S.items.filter((i) => i.active && i.paid_by === 'self');
+  // pendapatan tak tetap dalam slip (OT, cuti umum, komisen) = lebihan sekali, bukan asas peraturan
+  const EXTRA_KEYS = [['overtime', 'OT'], ['holiday', 'cuti umum'], ['commission', 'komisen']];
+  const slipExtra = (s) => (s ? round2(EXTRA_KEYS.reduce((t, [k]) => t + num(s[k]), 0)) : 0);
+  const slipExtraLabel = (s) => EXTRA_KEYS.filter(([k]) => num(s?.[k]) > 0).map(([, l]) => l).join(' + ');
+  // gaji bersih biasa: slip terkini tolak lebihan sekali (kalau tetapan income memang datang dari slip tu)
+  const baseIncome = () => { const s = S.payslips[0]; return s && round2(num(s.net)) === round2(income()) ? round2(num(s.net) - slipExtra(s)) : income(); };
+  const investRuleTotal = () => round2(baseIncome() * num(split().invest) / 100);
+  const investTargetTotal = () => {
+    const tg = S.settings.invest_target || { mode: 'current' };
+    if (tg.mode === 'rule') return investRuleTotal();
+    if (tg.mode === 'custom') return round2(num(tg.amount));
+    return round2(activeSelfItems().filter((i) => i.bucket === 'invest').reduce((s, i) => s + num(i.amount), 0));
+  };
 
   async function startApp() {
     if (document.activeElement) document.activeElement.blur();
@@ -192,16 +205,19 @@
 
     // arah "baik" setiap bucket: komitmen & reward elok bawah sasaran, invest elok atas sasaran
     const GOOD_DIR = { komitmen: 'under', invest: 'over', reward: 'under' };
+    // peraturan dikira atas gaji bersih biasa; OT/cuti umum/komisen = lebihan sekali (ditunjuk berasingan)
+    const base = baseIncome(), extra = round2(inc - base), diffBase = round2(base - total);
+    const lastSlip = S.payslips[0];
     const byBucket = Object.keys(BUCKETS).map((k) => {
       const actual = round2(items.filter((i) => i.bucket === k).reduce((s, i) => s + num(i.amount), 0));
-      const target = round2(inc * num(sp[k]) / 100);
+      const target = round2(base * num(sp[k]) / 100);
       const gap = round2(actual - target);
       const bad = GOOD_DIR[k] === 'under' ? gap > 0 : gap < 0;
       const tone = !bad ? 'good' : Math.abs(gap) > target * 0.05 ? 'bad' : 'warn';
       const msg = k === 'komitmen' ? (gap > 0 ? `Lebih ${amt(gap)} dari sasaran` : `Bawah sasaran ${amt(-gap)}, bagus`)
         : k === 'invest' ? (gap >= 0 ? `Lebih ${amt(gap)} dari sasaran, bagus` : `Kurang ${amt(-gap)} dari sasaran`)
         : (gap > 0 ? `Lebih ${amt(gap)} dari had` : `Belanja ${amt(-gap)} bawah had, tak perlu dihabiskan`);
-      return { k, actual, target, pct: num(sp[k]), real: inc ? round2(actual / inc * 100) : 0, tone, bad, msg };
+      return { k, actual, target, pct: num(sp[k]), real: base ? round2(actual / base * 100) : 0, tone, bad, msg };
     });
 
     const accts = S.accounts.filter((a) => a.active).map((a) => {
@@ -233,10 +249,14 @@
               ${b.k === 'invest' ? `<div class="small muted">${kindSplit(items).map(([l, n]) => `${l} ${rm(n)}`).join(' · ')}</div>` : ''}
             </div>`;
           }).join('')}
-          ${diff > 0 ? `<div class="bucket">
-              <div class="row"><b class="grow">Belum diagih <span class="muted small">${inc ? round2(diff / inc * 100) : 0}%</span></b><span class="${diff < 20 ? 'good' : 'warn'}">${amt(diff)}</span></div>
-              <div class="small ${diff < 20 ? 'good' : 'muted'}">${diff < 20 ? 'Seimbang, hampir setiap ringgit dah ada tugas.' : 'Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.'}</div>
-            </div>` : ''}
+          ${extra > 0 ? `<p class="small muted" style="margin:4px 0 0">Sasaran dikira atas gaji bersih biasa <b>${rm(base)}</b> (${rm(inc)} tolak ${esc(slipExtraLabel(lastSlip))}).</p>` : ''}
+          ${diffBase > 0 ? `<div class="bucket">
+              <div class="row"><b class="grow">Belum diagih <span class="muted small">${base ? round2(diffBase / base * 100) : 0}%</span></b><span class="${diffBase < 20 ? 'good' : 'warn'}">${amt(diffBase)}</span></div>
+              <div class="small ${diffBase < 20 ? 'good' : 'muted'}">${diffBase < 20 ? 'Seimbang, hampir setiap ringgit dah ada tugas.' : 'Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.'}</div>
+            </div>` : diffBase < 0 ? `<div class="bucket"><div class="row"><b class="grow">Lebih peruntukan</b><span class="warn">${amt(-diffBase)}</span></div>
+              <div class="small warn">Peruntukan melebihi gaji bersih biasa. Tekan Agih semula di What If, atau kurangkan item.</div></div>` : ''}
+          ${extra > 0 ? `<div class="bucket"><div class="row"><b class="grow">Lebihan sekali <span class="muted small">${esc(slipExtraLabel(lastSlip))}</span></b><span class="good">${amt(extra)}</span></div>
+              <div class="small muted">Bukan pendapatan tetap. Masukkan ke Dana kecemasan / matlamat untuk bulan ni sahaja (kad di Rekod).</div></div>` : ''}
         </div>
         <div class="card">
           <div class="card-h"><h2>Simpanan bulanan</h2><span class="muted small">Baki ("ALL BALANCE") setiap bulan</span></div>
@@ -431,6 +451,7 @@
         <div class="card-h"><h2>${monthLabel(p.month)}</h2><button class="btn sm" id="editPeriod">Edit bulan</button></div>
         ${p.notes ? `<p class="muted small">${esc(p.notes)}</p>` : ''}
       </div>
+        ${slipExtra(slipOf(p.month)) > 0 && !extraUsed(p) ? `<div class="alert warn row"><span class="grow"><b>Lebihan sekali ${rm(slipExtra(slipOf(p.month)))}</b> (${esc(slipExtraLabel(slipOf(p.month)))}) belum ada tugas. Masukkan ke Dana kecemasan / matlamat untuk bulan ni sahaja.</span><button class="btn primary sm" id="useExtra">Masukkan</button></div>` : ''}
         ${groups.map((g) => { const { a, list } = g; return `
           <div class="card seg${g.co ? ' seg-co' : ''}" style="--acct:${g.co ? '#6b7280' : esc(a?.color || '#999999')}">
             ${segHead(g)}
@@ -455,6 +476,7 @@
       </div>`;
 
     $('#editPeriod').onclick = () => periodDialog(p);
+    if ($('#useExtra')) $('#useExtra').onclick = () => extraDialog(p);
     $('#addTransfer').onclick = () => transferDialog(p);
     $$('[data-del-transfer]', body).forEach((b) => (b.onclick = async () => {
       if (!confirm('Padam pindahan ini?')) return;
@@ -877,13 +899,70 @@
     return { cuts, shortfall: al.shortfall, unallocated: al.unallocated, weightTotal: al.weightTotal, komitmenOld, komitmenNew: round2(komitmenOld + amount), investOld, investNew };
   }
 
-  // tukar amaun beberapa item; bekukan dulu entri lama (amount null) supaya sejarah bulan lepas tak ikut amaun baru
+  // tukar amaun beberapa item; bekukan dulu entri lama (amount null) supaya sejarah bulan lepas tak ikut amaun baru.
+  // Kecuali entri "belum" dalam bulan terbuka terkini — itu patut ikut amaun baru.
   async function setItemAmounts(changes) {
+    const open = S.periods[0] && !S.periods[0].closed ? S.periods[0] : null;
     for (const { item, newAmount } of changes) {
       if (round2(num(item.amount)) === round2(newAmount)) continue;
-      await q(sb.from('entries').update({ amount: num(item.amount) }).eq('item_id', item.id).is('amount', null));
+      const frz = S.entries.filter((e) => e.item_id === item.id && e.amount == null && !(open && e.period_id === open.id && e.status === 'pending'));
+      await Promise.all(frz.map((e) => q(sb.from('entries').update({ amount: num(item.amount) }).eq('id', e.id))));
       await q(sb.from('items').update({ amount: round2(newAmount) }).eq('id', item.id));
     }
+  }
+
+  // ===== Lebihan sekali (OT / cuti umum / komisen) =====
+  const EXTRA_NOTE = 'Lebihan sekali';
+  const extraUsed = (p) => S.entries.some((e) => e.period_id === p.id && (e.note || '').startsWith(EXTRA_NOTE));
+  const extraItemOptions = () => {
+    const inv = activeSelfItems().filter((i) => i.bucket === 'invest');
+    const def = inv.find((i) => i.kind === 'kecemasan') || inv[0];
+    return inv.map((i) => `<option value="${i.id}" ${i === def ? 'selected' : ''}>${esc(i.name)} (${rm(i.amount)})</option>`).join('');
+  };
+  async function applyExtra(p, itemId, extra, label) {
+    const item = S.items.find((i) => i.id === itemId);
+    if (!p || !item) return;
+    const e = S.entries.find((x) => x.period_id === p.id && x.item_id === itemId);
+    const baseAmt = num(e?.amount ?? item.amount);
+    await q(sb.from('entries').upsert({ period_id: p.id, item_id: itemId, status: e?.status || 'pending', amount: round2(baseAmt + extra),
+      note: `${EXTRA_NOTE} (${label}) +${extra.toFixed(2)}` }, { onConflict: 'period_id,item_id' }));
+  }
+  function extraDialog(p) {
+    const s = slipOf(p.month), extra = slipExtra(s), label = slipExtraLabel(s);
+    dialog(`<h2>Lebihan sekali ${monthLabel(p.month)}</h2>
+      <p class="small">${rm(extra)} dari ${esc(label)}. Bukan pendapatan tetap, jadi masukkan ke satu item untuk bulan ni sahaja — amaun bulanan item tak berubah.</p>
+      <label>Masukkan ke<select name="extra_item">${extraItemOptions()}</select></label>`, async (fd) => {
+      await applyExtra(p, fd.get('extra_item'), extra, label);
+      await reload(); toast(`Lebihan ${rm(extra)} dimasukkan.`);
+    });
+  }
+
+  // lepas slip terkini disimpan: tawar agih semula Invest ikut sasaran + guna lebihan sekali
+  function postSlipFlow(month) {
+    const s = slipOf(month);
+    if (!s || month !== S.payslips[0]?.month) return;
+    const invNow = round2(activeSelfItems().filter((i) => i.bucket === 'invest').reduce((t, i) => t + num(i.amount), 0));
+    const tgt = investTargetTotal();
+    const al = allocateInvest(tgt);
+    const okAl = !(al.shortfall > 0 || al.unallocated > 0);
+    const ch = okAl ? al.rows.filter((r) => !r.locked && round2(r.newAmount) !== round2(num(r.item.amount))) : [];
+    const extra = slipExtra(s), label = slipExtraLabel(s);
+    const p = S.periods.find((x) => x.month === month);
+    const canExtra = extra > 0 && p && !extraUsed(p);
+    if (!ch.length && !(extra > 0 && !(p && extraUsed(p)))) return;
+    dialog(`<h2>Slip ${monthLabel(month)} disimpan</h2>
+      <p class="muted small">Gaji bersih ${rm(s.net)} · gaji biasa ${rm(baseIncome())}${extra > 0 ? ` · lebihan sekali ${rm(extra)} (${esc(label)})` : ''}</p>
+      ${ch.length ? `<label class="check"><input type="checkbox" name="rebal" checked> <b>Agih semula Invest ikut pemberat</b> · ${rm(invNow)} → ${rm(tgt)}</label>
+        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Sekarang</th><th class="r">Baru</th></tr></thead><tbody>
+          ${ch.map((r) => `<tr><td>${esc(r.item.name)} <span class="small muted">${r.weight}/5</span></td><td class="r">${amt(r.item.amount)}</td><td class="r"><b>${amt(r.newAmount)}</b></td></tr>`).join('')}
+        </tbody></table></div>` : `<p class="small muted">Invest dah ikut sasaran (${rm(tgt)}) — tiada perubahan.</p>`}
+      ${extra > 0 ? (canExtra ? `<label class="check"><input type="checkbox" name="extra" checked> <b>Masukkan lebihan sekali ${rm(extra)}</b> untuk ${monthLabel(month)} sahaja ke:</label>
+        <label><select name="extra_item">${extraItemOptions()}</select></label>`
+        : `<p class="small muted">Lebihan sekali ${rm(extra)}: buka bulan ${monthLabel(month)} di Rekod dulu, kemudian tekan kad "Lebihan sekali" di situ.</p>`) : ''}`, async (fd) => {
+      if (fd.get('rebal') === 'on') { await setItemAmounts(ch.map((r) => ({ item: r.item, newAmount: r.newAmount }))); await reload(); }
+      if (fd.get('extra') === 'on') await applyExtra(p, fd.get('extra_item'), extra, label);
+      await reload(); toast('Hari gaji: siap.');
+    });
   }
 
   function renderWhatIf(v) {
@@ -892,7 +971,7 @@
     const inv = S.items.filter((i) => i.bucket === 'invest' && i.active).sort((a, b) => num(b.amount) - num(a.amount));
     const investTotal = round2(inv.reduce((s, i) => s + num(i.amount), 0));
     // Jumlah Invest sasaran: 'rule' = % Invest peraturan x gaji bersih, 'custom' = angka sendiri, lain = jumlah semasa
-    const ruleTotal = round2(income() * num(split().invest) / 100);
+    const ruleTotal = investRuleTotal();
     const tg = S.settings.invest_target || { mode: 'current' };
     const target = tg.mode === 'rule' ? ruleTotal : tg.mode === 'custom' ? round2(num(tg.amount)) : investTotal;
     const al = allocateInvest(target);
@@ -910,7 +989,7 @@
             <button type="button" class="pill ${tg.mode !== 'rule' && tg.mode !== 'custom' ? 'on' : ''}" data-wi-tmode="current">Semasa · ${amt(investTotal)}</button>
             <label class="inline">Lain (RM)<input id="wiTargetCustom" type="number" step="0.01" min="0" value="${tg.mode === 'custom' ? round2(num(tg.amount)) : ''}" placeholder="${ruleTotal}" style="width:110px"></label>
           </div>
-          <p class="muted small">${tg.mode === 'rule' ? `${num(split().invest)}% × gaji bersih ${rm(income())} (ikut Tetapan).` : ''} ${tDiff ? `Berbanding sekarang: <b class="${tDiff < 0 ? 'warn' : ''}">${tDiff > 0 ? '+' : '−'}${rm(Math.abs(tDiff))}</b> ${tDiff < 0 ? '(pindah ke Belum diagih)' : '(diambil dari Belum diagih)'}.` : 'Sama dengan jumlah semasa.'}</p>
+          <p class="muted small">${tg.mode === 'rule' ? `${num(split().invest)}% × gaji bersih biasa ${rm(baseIncome())}${baseIncome() !== income() ? ` (slip terkini ${rm(income())} tolak ${esc(slipExtraLabel(S.payslips[0]))})` : ""}.` : ''} ${tDiff ? `Berbanding sekarang: <b class="${tDiff < 0 ? 'warn' : ''}">${tDiff > 0 ? '+' : '−'}${rm(Math.abs(tDiff))}</b> ${tDiff < 0 ? '(pindah ke Belum diagih)' : '(diambil dari Belum diagih)'}.` : 'Sama dengan jumlah semasa.'}</p>
         </div>
         <p class="muted small">Klik kotak untuk set pemberat (klik kotak 1 sekali lagi = 0). Amaun = pemberat ÷ jumlah pemberat semua item (<b>${al.weightTotal}</b>) × jumlah Invest sasaran (${amt(target)}). Pemberat 0 = tak diagih. Had minimum = perlindungan keras.</p>
         <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Pemberat</th><th class="r">Amaun sekarang</th><th class="r">Ikut pemberat</th><th class="r">%</th><th>Had minimum (RM)</th></tr></thead><tbody>
@@ -1184,6 +1263,7 @@
       if (!sl && slipOf(month)) throw new Error('Slip bulan ini dah wujud.');
       await saveSlip(row, month, sl);
       await reload(); toast('Slip disimpan · bersih ' + rm(row.net));
+      setTimeout(() => postSlipFlow(month), 0); // selepas dialog slip ditutup
     });
     const form = $('#dlgForm');
     const calc = () => {
@@ -1251,6 +1331,7 @@
       if (!pick.length) return toast('Tiada slip ditick.', true);
       for (const r of pick) await saveSlip(rowOf(r), r.month, slipOf(r.month));
       box.innerHTML = ''; await reload(); toast(`${pick.length} slip disimpan.`);
+      postSlipFlow(pick.map((r) => r.month).sort().at(-1));
     };
   }
 
