@@ -153,13 +153,7 @@
   const acct = (id) => S.accounts.find((a) => a.id === id);
   const slipOf = (month) => S.payslips.find((s) => s.month === month);
   const activeSelfItems = () => S.items.filter((i) => i.active && i.paid_by === 'self');
-  // pendapatan tak tetap dalam slip (OT, cuti umum, komisen) = lebihan sekali, bukan asas peraturan
-  const EXTRA_KEYS = [['overtime', 'OT'], ['holiday', 'cuti umum'], ['commission', 'komisen']];
-  const slipExtra = (s) => (s ? round2(EXTRA_KEYS.reduce((t, [k]) => t + num(s[k]), 0)) : 0);
-  const slipExtraLabel = (s) => EXTRA_KEYS.filter(([k]) => num(s?.[k]) > 0).map(([, l]) => l).join(' + ');
-  // gaji bersih biasa: slip terkini tolak lebihan sekali (kalau tetapan income memang datang dari slip tu)
-  const baseIncome = () => { const s = S.payslips[0]; return s && round2(num(s.net)) === round2(income()) ? round2(num(s.net) - slipExtra(s)) : income(); };
-  const investRuleTotal = () => round2(baseIncome() * num(split().invest) / 100);
+  const investRuleTotal = () => round2(income() * num(split().invest) / 100);
   const investTargetTotal = () => {
     const tg = S.settings.invest_target || { mode: 'current' };
     if (tg.mode === 'rule') return investRuleTotal();
@@ -205,19 +199,16 @@
 
     // arah "baik" setiap bucket: komitmen & reward elok bawah sasaran, invest elok atas sasaran
     const GOOD_DIR = { komitmen: 'under', invest: 'over', reward: 'under' };
-    // peraturan dikira atas gaji bersih biasa; OT/cuti umum/komisen = lebihan sekali (ditunjuk berasingan)
-    const base = baseIncome(), extra = round2(inc - base), diffBase = round2(base - total);
-    const lastSlip = S.payslips[0];
     const byBucket = Object.keys(BUCKETS).map((k) => {
       const actual = round2(items.filter((i) => i.bucket === k).reduce((s, i) => s + num(i.amount), 0));
-      const target = round2(base * num(sp[k]) / 100);
+      const target = round2(inc * num(sp[k]) / 100);
       const gap = round2(actual - target);
       const bad = GOOD_DIR[k] === 'under' ? gap > 0 : gap < 0;
       const tone = !bad ? 'good' : Math.abs(gap) > target * 0.05 ? 'bad' : 'warn';
       const msg = k === 'komitmen' ? (gap > 0 ? `Lebih ${amt(gap)} dari sasaran` : `Bawah sasaran ${amt(-gap)}, bagus`)
         : k === 'invest' ? (gap >= 0 ? `Lebih ${amt(gap)} dari sasaran, bagus` : `Kurang ${amt(-gap)} dari sasaran`)
         : (gap > 0 ? `Lebih ${amt(gap)} dari had` : `Belanja ${amt(-gap)} bawah had, tak perlu dihabiskan`);
-      return { k, actual, target, pct: num(sp[k]), real: base ? round2(actual / base * 100) : 0, tone, bad, msg };
+      return { k, actual, target, pct: num(sp[k]), real: inc ? round2(actual / inc * 100) : 0, tone, bad, msg };
     });
 
     const accts = S.accounts.filter((a) => a.active).map((a) => {
@@ -227,6 +218,7 @@
     const company = S.items.filter((i) => i.active && i.paid_by === 'company');
     const noAcct = items.filter((i) => !i.account_id);
 
+    const pvNow = planVsReality(inc, S.payslips[0] && round2(num(S.payslips[0].net)) === round2(inc) ? S.payslips[0].month : null);
     v.innerHTML = `
       ${diff < 0 ? `<div class="alert bad"><b>Peruntukan melebihi gaji sebanyak ${amt(-diff)}.</b> Jumlah item aktif ${amt(total)} berbanding pendapatan ${amt(inc)}. Kurangkan item atau ambil dari baki bulan lepas.</div>` : ''}
       <div class="grid g4">
@@ -249,14 +241,10 @@
               ${b.k === 'invest' ? `<div class="small muted">${kindSplit(items).map(([l, n]) => `${l} ${rm(n)}`).join(' · ')}</div>` : ''}
             </div>`;
           }).join('')}
-          ${extra > 0 ? `<p class="small muted" style="margin:4px 0 0">Sasaran dikira atas gaji bersih biasa <b>${rm(base)}</b> (${rm(inc)} tolak ${esc(slipExtraLabel(lastSlip))}).</p>` : ''}
-          ${diffBase > 0 ? `<div class="bucket">
-              <div class="row"><b class="grow">Belum diagih <span class="muted small">${base ? round2(diffBase / base * 100) : 0}%</span></b><span class="${diffBase < 20 ? 'good' : 'warn'}">${amt(diffBase)}</span></div>
-              <div class="small ${diffBase < 20 ? 'good' : 'muted'}">${diffBase < 20 ? 'Seimbang, hampir setiap ringgit dah ada tugas.' : 'Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.'}</div>
-            </div>` : diffBase < 0 ? `<div class="bucket"><div class="row"><b class="grow">Lebih peruntukan</b><span class="warn">${amt(-diffBase)}</span></div>
-              <div class="small warn">Peruntukan melebihi gaji bersih biasa. Tekan Agih semula di What If, atau kurangkan item.</div></div>` : ''}
-          ${extra > 0 ? `<div class="bucket"><div class="row"><b class="grow">Lebihan sekali <span class="muted small">${esc(slipExtraLabel(lastSlip))}</span></b><span class="good">${amt(extra)}</span></div>
-              <div class="small muted">Bukan pendapatan tetap. Masukkan ke Dana kecemasan / matlamat untuk bulan ni sahaja (kad di Rekod).</div></div>` : ''}
+          ${diff > 0 ? `<div class="bucket">
+              <div class="row"><b class="grow">Belum diagih <span class="muted small">${inc ? round2(diff / inc * 100) : 0}%</span></b><span class="${diff < 20 ? 'good' : 'warn'}">${amt(diff)}</span></div>
+              <div class="small ${diff < 20 ? 'good' : 'muted'}">${diff < 20 ? 'Seimbang, hampir setiap ringgit dah ada tugas.' : 'Duit tanpa tugas biasanya habis dalam belanja harian. Lihat cadangan di bawah.'}</div>
+            </div>` : ''}
         </div>
         <div class="card">
           <div class="card-h"><h2>Simpanan bulanan</h2><span class="muted small">Baki ("ALL BALANCE") setiap bulan</span></div>
@@ -283,9 +271,14 @@
         </div>
         ${noAcct.length ? `<p class="warn small">Item tanpa akaun: ${noAcct.map((i) => esc(i.name)).join(', ')}</p>` : ''}
         ${company.length ? `<p class="muted small" style="margin-top:12px">Dibayar company (tak dikira): ${company.map((i) => `${esc(i.name)} ${amt(i.amount)}`).join(', ')}</p>` : ''}
+      </div>
+      <div class="card">
+        <div class="card-h"><h2>Pelan ${byBucket.map((b) => b.pct).join('/')} vs Realiti</h2>${pvNow.canAdjust ? '<button class="btn primary sm" id="pvrAdjust">Laras Invest ke pelan</button>' : '<span class="muted small">Invest dah ikut pelan</span>'}</div>
+        ${pvrHtml(pvNow)}
       </div>`;
     $$('.bar > i', v).forEach((i) => { i.style.width = i.dataset.w + '%'; });
     $$('[data-advice-item]', v).forEach((b) => (b.onclick = () => itemDialog(null, JSON.parse(b.dataset.adviceItem))));
+    if ($('#pvrAdjust', v)) $('#pvrAdjust', v).onclick = () => { if (confirm(`Laras Invest ke pelan ${rm(pvNow.investPlan)}?\n\n${pvNow.changes.map((r) => `${r.item.name}: ${rm(r.item.amount)} → ${rm(r.newAmount)}`).join('\n')}\n\nKomitmen & Self Reward kekal. Rekod bulan lepas tak berubah.`)) adjustInvestToPlan(pvNow); };
   }
 
   // pecahan bucket invest ikut jenis: [[label, jumlah]]
@@ -451,7 +444,6 @@
         <div class="card-h"><h2>${monthLabel(p.month)}</h2><button class="btn sm" id="editPeriod">Edit bulan</button></div>
         ${p.notes ? `<p class="muted small">${esc(p.notes)}</p>` : ''}
       </div>
-        ${slipExtra(slipOf(p.month)) > 0 && !extraUsed(p) ? `<div class="alert warn row"><span class="grow"><b>Lebihan sekali ${rm(slipExtra(slipOf(p.month)))}</b> (${esc(slipExtraLabel(slipOf(p.month)))}) belum ada tugas. Masukkan ke Dana kecemasan / matlamat untuk bulan ni sahaja.</span><button class="btn primary sm" id="useExtra">Masukkan</button></div>` : ''}
         ${groups.map((g) => { const { a, list } = g; return `
           <div class="card seg${g.co ? ' seg-co' : ''}" style="--acct:${g.co ? '#6b7280' : esc(a?.color || '#999999')}">
             ${segHead(g)}
@@ -476,7 +468,6 @@
       </div>`;
 
     $('#editPeriod').onclick = () => periodDialog(p);
-    if ($('#useExtra')) $('#useExtra').onclick = () => extraDialog(p);
     $('#addTransfer').onclick = () => transferDialog(p);
     $$('[data-del-transfer]', body).forEach((b) => (b.onclick = async () => {
       if (!confirm('Padam pindahan ini?')) return;
@@ -911,59 +902,70 @@
     }
   }
 
-  // ===== Lebihan sekali (OT / cuti umum / komisen) =====
-  const EXTRA_NOTE = 'Lebihan sekali';
-  const extraUsed = (p) => S.entries.some((e) => e.period_id === p.id && (e.note || '').startsWith(EXTRA_NOTE));
-  const extraItemOptions = () => {
-    const inv = activeSelfItems().filter((i) => i.bucket === 'invest');
-    const def = inv.find((i) => i.kind === 'kecemasan') || inv[0];
-    return inv.map((i) => `<option value="${i.id}" ${i === def ? 'selected' : ''}>${esc(i.name)} (${rm(i.amount)})</option>`).join('');
-  };
-  async function applyExtra(p, itemId, extra, label) {
-    const item = S.items.find((i) => i.id === itemId);
-    if (!p || !item) return;
-    const e = S.entries.find((x) => x.period_id === p.id && x.item_id === itemId);
-    const baseAmt = num(e?.amount ?? item.amount);
-    await q(sb.from('entries').upsert({ period_id: p.id, item_id: itemId, status: e?.status || 'pending', amount: round2(baseAmt + extra),
-      note: `${EXTRA_NOTE} (${label}) +${extra.toFixed(2)}` }, { onConflict: 'period_id,item_id' }));
-  }
-  function extraDialog(p) {
-    const s = slipOf(p.month), extra = slipExtra(s), label = slipExtraLabel(s);
-    dialog(`<h2>Lebihan sekali ${monthLabel(p.month)}</h2>
-      <p class="small">${rm(extra)} dari ${esc(label)}. Bukan pendapatan tetap, jadi masukkan ke satu item untuk bulan ni sahaja — amaun bulanan item tak berubah.</p>
-      <label>Masukkan ke<select name="extra_item">${extraItemOptions()}</select></label>`, async (fd) => {
-      await applyExtra(p, fd.get('extra_item'), extra, label);
-      await reload(); toast(`Lebihan ${rm(extra)} dimasukkan.`);
+  // ===== Pelan 70/20/10 vs Realiti =====
+  // Pelan = % peraturan x gaji bersih slip. Realiti = amaun item semasa (slip terkini) atau rekod bulan tu (slip lama).
+  // Komitmen (bil tetap) & Self Reward kekal; hanya Invest boleh dilaras ikut pemberat ke pelan.
+  function planVsReality(net, month) {
+    const sp = split();
+    const isLatest = !month || month === S.payslips[0]?.month;
+    const p = !isLatest ? S.periods.find((x) => x.month === month) : null;
+    const amtOf = (i) => { const e = p && S.entries.find((x) => x.period_id === p.id && x.item_id === i.id); return num(e ? (e.amount ?? i.amount) : i.amount); };
+    const items = p ? S.items.filter((i) => i.paid_by === 'self' && S.entries.some((e) => e.period_id === p.id && e.item_id === i.id)) : activeSelfItems();
+    const sumOf = (list, f = amtOf) => round2(list.reduce((s, i) => s + f(i), 0));
+    const buckets = Object.keys(BUCKETS).map((k) => {
+      const plan = round2(net * num(sp[k]) / 100), real = sumOf(items.filter((i) => i.bucket === k));
+      return { k, pct: num(sp[k]), plan, real, gap: round2(real - plan) };
     });
+    const totalReal = round2(buckets.reduce((s, b) => s + b.real, 0));
+    const investPlan = buckets.find((b) => b.k === 'invest')?.plan || 0;
+    const al = isLatest ? allocateInvest(investPlan) : null;
+    const newAmt = new Map((al?.rows || []).map((r) => [r.item.id, r.newAmount]));
+    const after = (i) => (newAmt.has(i.id) ? newAmt.get(i.id) : amtOf(i));
+    const accts = [...S.accounts, null].map((a) => {
+      const its = items.filter((i) => (i.account_id || null) === (a?.id || null));
+      return { a, real: sumOf(its), after: sumOf(its, after) };
+    }).filter((x) => x.real || x.after);
+    const changes = (al?.rows || []).filter((r) => round2(r.newAmount) !== round2(num(r.item.amount)));
+    const canAdjust = isLatest && changes.length > 0 && !(al.shortfall > 0 || al.unallocated > 0);
+    return { net, month, buckets, totalReal, left: round2(net - totalReal), leftAfter: round2(net - accts.reduce((s, x) => s + x.after, 0)), accts, changes, canAdjust, investPlan, hist: !!p, isLatest };
   }
 
-  // lepas slip terkini disimpan: tawar agih semula Invest ikut sasaran + guna lebihan sekali
-  function postSlipFlow(month) {
+  function pvrHtml(pv) {
+    const beza = (b) => {
+      if (b.k === 'invest') return b.gap >= 0 ? `<span class="good">+${rm(b.gap)}</span>` : `<span class="warn">kurang ${rm(-b.gap)}</span>`;
+      return b.gap <= 0 ? `<span class="good">ruang ${rm(-b.gap)}</span>` : `<span class="warn">lebih ${rm(b.gap)}</span>`;
+    };
+    return `<p class="small">Gaji bersih${pv.month ? ` ${monthLabel(pv.month)}` : ''}: <b>${rm(pv.net)}</b>${pv.hist ? ' · realiti = rekod bulan tu' : ''}</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Bucket</th><th class="r">Pelan</th><th class="r">Realiti</th><th class="r">Beza</th></tr></thead><tbody>
+        ${pv.buckets.map((b) => `<tr><td><b>${BUCKETS[b.k]}</b> <span class="muted small">${b.pct}%</span></td><td class="r">${amt(b.plan)}</td><td class="r">${amt(b.real)}</td><td class="r small">${beza(b)}</td></tr>`).join('')}
+        <tr><td><b>${pv.left >= 0 ? 'Belum diagih' : 'Defisit'}</b></td><td class="r muted">—</td><td class="r ${pv.left < 0 ? 'bad' : ''}">${amt(pv.left)}</td><td></td></tr>
+      </tbody></table></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Pindahan per akaun</th><th class="r">Realiti</th>${pv.canAdjust ? '<th class="r">Lepas laras Invest</th>' : ''}</tr></thead><tbody>
+        ${pv.accts.map((x) => `<tr><td><span class="dot" style="--acct:${esc(x.a?.color || '#999')}"></span>${esc(x.a ? `${x.a.code} · ${x.a.role || ''}` : 'Tiada akaun')}</td><td class="r">${amt(x.real)}</td>${pv.canAdjust ? `<td class="r ${round2(x.after) !== round2(x.real) ? '' : 'muted'}"><b>${amt(x.after)}</b></td>` : ''}</tr>`).join('')}
+        ${pv.canAdjust ? `<tr><td class="muted">Belum diagih</td><td class="r">${amt(pv.left)}</td><td class="r">${amt(pv.leftAfter)}</td></tr>` : ''}
+      </tbody></table></div>
+      ${pv.canAdjust ? `<details class="note"><summary class="small">Perubahan item Invest (ikut pemberat, jumlah ${rm(pv.investPlan)})</summary>
+        <ul class="small">${pv.changes.map((r) => `<li>${esc(r.item.name)} ${r.weight}/5: ${rm(r.item.amount)} → <b>${rm(r.newAmount)}</b></li>`).join('')}</ul></details>` : ''}`;
+  }
+
+  async function adjustInvestToPlan(pv) {
+    await q(sb.from('settings').upsert({ key: 'invest_target', value: { mode: 'rule' } }));
+    await setItemAmounts(pv.changes.map((r) => ({ item: r.item, newAmount: r.newAmount })));
+    await reload(); toast(`Invest dilaras ke pelan ${rm(pv.investPlan)}.`);
+  }
+
+  // popup Pelan vs Realiti: lepas slip disimpan / dari tab Gaji / Ringkasan
+  function pvrDialog(month, title) {
     const s = slipOf(month);
-    if (!s || month !== S.payslips[0]?.month) return;
-    const invNow = round2(activeSelfItems().filter((i) => i.bucket === 'invest').reduce((t, i) => t + num(i.amount), 0));
-    const tgt = investTargetTotal();
-    const al = allocateInvest(tgt);
-    const okAl = !(al.shortfall > 0 || al.unallocated > 0);
-    const ch = okAl ? al.rows.filter((r) => !r.locked && round2(r.newAmount) !== round2(num(r.item.amount))) : [];
-    const extra = slipExtra(s), label = slipExtraLabel(s);
-    const p = S.periods.find((x) => x.month === month);
-    const canExtra = extra > 0 && p && !extraUsed(p);
-    if (!ch.length && !(extra > 0 && !(p && extraUsed(p)))) return;
-    dialog(`<h2>Slip ${monthLabel(month)} disimpan</h2>
-      <p class="muted small">Gaji bersih ${rm(s.net)} · gaji biasa ${rm(baseIncome())}${extra > 0 ? ` · lebihan sekali ${rm(extra)} (${esc(label)})` : ''}</p>
-      ${ch.length ? `<label class="check"><input type="checkbox" name="rebal" checked> <b>Agih semula Invest ikut pemberat</b> · ${rm(invNow)} → ${rm(tgt)}</label>
-        <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Sekarang</th><th class="r">Baru</th></tr></thead><tbody>
-          ${ch.map((r) => `<tr><td>${esc(r.item.name)} <span class="small muted">${r.weight}/5</span></td><td class="r">${amt(r.item.amount)}</td><td class="r"><b>${amt(r.newAmount)}</b></td></tr>`).join('')}
-        </tbody></table></div>` : `<p class="small muted">Invest dah ikut sasaran (${rm(tgt)}) — tiada perubahan.</p>`}
-      ${extra > 0 ? (canExtra ? `<label class="check"><input type="checkbox" name="extra" checked> <b>Masukkan lebihan sekali ${rm(extra)}</b> untuk ${monthLabel(month)} sahaja ke:</label>
-        <label><select name="extra_item">${extraItemOptions()}</select></label>`
-        : `<p class="small muted">Lebihan sekali ${rm(extra)}: buka bulan ${monthLabel(month)} di Rekod dulu, kemudian tekan kad "Lebihan sekali" di situ.</p>`) : ''}`, async (fd) => {
-      if (fd.get('rebal') === 'on') { await setItemAmounts(ch.map((r) => ({ item: r.item, newAmount: r.newAmount }))); await reload(); }
-      if (fd.get('extra') === 'on') await applyExtra(p, fd.get('extra_item'), extra, label);
-      await reload(); toast('Hari gaji: siap.');
+    if (!s) return;
+    const pv = planVsReality(num(s.net), month);
+    dialog(`<h2>${esc(title || `Pelan vs Realiti · ${monthLabel(month)}`)}</h2>${pvrHtml(pv)}
+      ${pv.canAdjust ? `<label class="check"><input type="checkbox" name="adjust" checked> <b>Laras Invest ke pelan ${rm(pv.investPlan)}</b> ikut pemberat (Komitmen & Self Reward kekal)</label>`
+        : pv.isLatest ? '<p class="small good">Invest dah ikut pelan.</p>' : ''}`, async (fd) => {
+      if (fd.get('adjust') === 'on') await adjustInvestToPlan(pv);
     });
   }
+  const postSlipFlow = (month) => { if (month === S.payslips[0]?.month) pvrDialog(month, `Slip ${monthLabel(month)} disimpan · Pelan vs Realiti`); };
 
   function renderWhatIf(v) {
     const drafts = S.whatIfScenarios.filter((s) => s.status === 'draft');
@@ -989,7 +991,7 @@
             <button type="button" class="pill ${tg.mode !== 'rule' && tg.mode !== 'custom' ? 'on' : ''}" data-wi-tmode="current">Semasa · ${amt(investTotal)}</button>
             <label class="inline">Lain (RM)<input id="wiTargetCustom" type="number" step="0.01" min="0" value="${tg.mode === 'custom' ? round2(num(tg.amount)) : ''}" placeholder="${ruleTotal}" style="width:110px"></label>
           </div>
-          <p class="muted small">${tg.mode === 'rule' ? `${num(split().invest)}% × gaji bersih biasa ${rm(baseIncome())}${baseIncome() !== income() ? ` (slip terkini ${rm(income())} tolak ${esc(slipExtraLabel(S.payslips[0]))})` : ""}.` : ''} ${tDiff ? `Berbanding sekarang: <b class="${tDiff < 0 ? 'warn' : ''}">${tDiff > 0 ? '+' : '−'}${rm(Math.abs(tDiff))}</b> ${tDiff < 0 ? '(pindah ke Belum diagih)' : '(diambil dari Belum diagih)'}.` : 'Sama dengan jumlah semasa.'}</p>
+          <p class="muted small">${tg.mode === 'rule' ? `${num(split().invest)}% × gaji bersih ${rm(income())} (slip terkini).` : ''} ${tDiff ? `Berbanding sekarang: <b class="${tDiff < 0 ? 'warn' : ''}">${tDiff > 0 ? '+' : '−'}${rm(Math.abs(tDiff))}</b> ${tDiff < 0 ? '(pindah ke Belum diagih)' : '(diambil dari Belum diagih)'}.` : 'Sama dengan jumlah semasa.'}</p>
         </div>
         <p class="muted small">Klik kotak untuk set pemberat (klik kotak 1 sekali lagi = 0). Amaun = pemberat ÷ jumlah pemberat semua item (<b>${al.weightTotal}</b>) × jumlah Invest sasaran (${amt(target)}). Pemberat 0 = tak diagih. Had minimum = perlindungan keras.</p>
         <div class="tbl-wrap"><table><thead><tr><th>Item</th><th>Pemberat</th><th class="r">Amaun sekarang</th><th class="r">Ikut pemberat</th><th class="r">%</th><th>Had minimum (RM)</th></tr></thead><tbody>
@@ -1218,7 +1220,7 @@
       <div class="card"><div class="tbl-wrap"><table><thead><tr><th>Bulan</th><th class="r">Kasar</th><th class="r">Bersih</th><th class="r">KWSP</th><th class="r">PERKESO+EIS</th><th class="r">SKBBK</th><th class="r">Rumah</th><th>Jawatan</th><th>Nota</th><th></th></tr></thead><tbody>
         ${ps.map((s) => `<tr><td>${monthLabel(s.month)}</td><td class="r">${amt(s.gross)}</td><td class="r"><b>${amt(s.net)}</b></td><td class="r">${amt(s.epf)}</td>
           <td class="r">${amt(round2(num(s.socso) + num(s.eis)))}</td><td class="r">${num(s.skbbk) ? amt(s.skbbk) : '—'}</td><td class="r">${num(s.staff_house) ? amt(s.staff_house) : '—'}</td>
-          <td class="small">${esc(s.position || '')}</td><td class="small muted">${esc(s.note || '')}</td><td class="r"><button class="btn ghost sm" data-edit-slip="${s.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">Belum ada slip.</td></tr>'}
+          <td class="small">${esc(s.position || '')}</td><td class="small muted">${esc(s.note || '')}</td><td class="r nowrap"><button class="btn ghost sm" data-pvr-slip="${s.month}">Pelan</button> <button class="btn ghost sm" data-edit-slip="${s.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">Belum ada slip.</td></tr>'}
       </tbody></table></div></div>
       ${ps.length ? '<div id="ebeBox"></div>' : ''}`;
     $('#addSlip').onclick = () => slipDialog(null);
@@ -1226,6 +1228,7 @@
     $('#slipFile').onchange = (e) => { importSlips([...e.target.files]); e.target.value = ''; };
     if (ps.length) renderEbe($('#ebeBox'));
     $$('[data-edit-slip]', v).forEach((b) => (b.onclick = () => slipDialog(S.payslips.find((s) => s.id === b.dataset.editSlip))));
+    $$('[data-pvr-slip]', v).forEach((b) => (b.onclick = () => pvrDialog(b.dataset.pvrSlip)));
   }
 
   const SLIP_KEYS = [...SLIP_EARN, ...SLIP_DED, ...SLIP_ER].map(([k]) => k);
